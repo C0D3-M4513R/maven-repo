@@ -4,21 +4,31 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use rocket::http::Status;
+use rocket::http::{ContentType, Status};
 use rocket::State;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use crate::repository::{RemoteUpstream, Repository, Upstream};
-use crate::status::{Return, TypedContent};
+use crate::status::Return;
 
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: PathBuf) -> Return {
     if path.iter().any(|v|v == "..") {
-        return Return::Content((Status::BadRequest, TypedContent::text(Cow::Borrowed("`..` is not allowed in the path".as_bytes()))));
+        return Return::Content{
+            status: Status::BadRequest,
+            content: Cow::Borrowed("`..` is not allowed in the path".as_bytes()),
+            content_type: ContentType::Text,
+            header_map: Default::default(),
+        }
     }
     let str_path = match path.to_str() {
-        None => return Return::Content((Status::InternalServerError, TypedContent::text(Cow::Borrowed(GetRepoFileError::InvalidUTF8.get_err().as_bytes())))),
+        None => return Return::Content{
+            status: Status::InternalServerError,
+            content: GetRepoFileError::InvalidUTF8.get_err().as_bytes().into(),
+            content_type: ContentType::Text,
+            header_map: Default::default(),
+        },
         Some(v) => Arc::<str>::from(v),
     };
 
@@ -35,7 +45,12 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
                 out.push_str(err.get_err());
                 out.push('\n');
             }
-            Return::Content((Status::InternalServerError, TypedContent::text(Cow::Owned(out.into_bytes()))))
+            Return::Content{
+                status: Status::BadRequest,
+                content: out.into_bytes().into(),
+                content_type: ContentType::Text,
+                header_map: Default::default(),
+            }
         }
     }
 }
@@ -174,16 +189,31 @@ enum StoredRepoPath{
 impl StoredRepoPath {
     pub fn to_return(self, path: &str, repo:&str) -> Return {
         match self {
-            Self::UpstreamDirListing(v) => Return::Content((Status::Ok, TypedContent::html(Cow::Owned(v.into_bytes())))),
+            Self::UpstreamDirListing(v) => Return::Content{
+                status: Status::Ok,
+                content: v.into_bytes().into(),
+                content_type: ContentType::HTML,
+                header_map: Default::default(),
+            },
             Self::DirListing(v) => {
                 let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_string();
                 for entry in v {
                     out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
                 }
                 out.push_str("</ul></body></html>");
-                Return::Content((Status::Ok, TypedContent::html(Cow::Owned(out.into_bytes()))))
+                Return::Content{
+                    status: Status::Ok,
+                    content: out.into_bytes().into(),
+                    content_type: ContentType::HTML,
+                    header_map: Default::default(),
+                }
             },
-            Self::File(v) => Return::Content((Status::Ok, TypedContent::binary(Cow::Owned(v)))),
+            Self::File(v) => Return::Content{
+                status: Status::Ok,
+                content: v.into(),
+                content_type: ContentType::Binary,
+                header_map: Default::default(),
+            }
         }
     }
 }
