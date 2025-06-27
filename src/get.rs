@@ -17,9 +17,14 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
     if path.iter().any(|v|v == "..") {
         return Return::Content((Status::BadRequest, TypedContent::text(Cow::Borrowed("`..` is not allowed in the path".as_bytes()))));
     }
+    let str_path = match path.to_str() {
+        None => return Return::Content((Status::InternalServerError, TypedContent::text(Cow::Borrowed(GetRepoFileError::InvalidUTF8.get_err().as_bytes())))),
+        Some(v) => Arc::<str>::from(v),
+    };
+
     let set = Arc::new(Mutex::new(HashSet::new()));
-    match get_repo_file_impl((*client).clone(), repo, Arc::from(path), set).await {
-        Ok(v) => v.to_return(),
+    match get_repo_file_impl((*client).clone(), repo.clone(), Arc::from(path), str_path.clone(), set).await {
+        Ok(v) => v.to_return(str_path.as_ref(), &repo),
         Err(v) => {
             let mut out = String::new();
             if v.is_empty() {
@@ -86,7 +91,7 @@ async fn get_repo_config(repo: &str) -> Result<Repository, GetRepoFileError> {
     };
     Ok(config)
 }
-fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, visited_repos: Arc<Mutex<HashSet<String>>>) -> Pin<Box<dyn Future<Output = Result<StoredRepoPath, Vec<GetRepoFileError>>> + Send>> {
+fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, str_path: Arc<str>, visited_repos: Arc<Mutex<HashSet<String>>>) -> Pin<Box<dyn Future<Output = Result<StoredRepoPath, Vec<GetRepoFileError>>> + Send>> {
     Box::pin(async move{
         check_already_visited(&repo, &visited_repos).await?;
 
@@ -97,7 +102,6 @@ fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, vi
             serve_repository_stored_path(&path, true).await
         } else {
             let mut js = JoinSet::new();
-            let str_path = Arc::<str>::from(path.to_str().ok_or_else(||vec![GetRepoFileError::InvalidUTF8])?);
             let mut local_upstream = Vec::new();
             let mut remote_upstream = Vec::new();
 
@@ -110,28 +114,38 @@ fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, vi
             
             let mut errors = Vec::new();
             let mut check_result = async |js:&mut JoinSet<_>|{
+                let mut out = None; 
                 while let Some(task) = js.join_next().await {
                     match task {
                         Ok(Ok(v)) => {
-                            js.abort_all();
-                            return Some(v);
+                            out = match (out, v) {
+                                (Some(StoredRepoPath::DirListing(mut out)), StoredRepoPath::DirListing(v)) => {
+                                    out.extend(v);
+                                    Some(StoredRepoPath::DirListing(out))
+                                }
+                                (Some(out), _) => {
+                                    js.abort_all();
+                                    return Some(out)
+                                },
+                                (None, v) => {
+                                    Some(v)
+                                }
+                            };
                         },
                         Ok(Err(mut v)) => {
                             errors.append(&mut v);
-                            continue;
                         },
                         Err(err) => {
                             log::error!("Panicked whilst trying to resolve repo file: {err}");
                             errors.push(GetRepoFileError::Panicked);
-                            continue;
                         }
                     }
                 };
-                None
+                out
             };
 
             for upstream in local_upstream {
-                js.spawn(get_repo_file_impl(client.clone(), upstream.path, path.clone(), visited_repos.clone()));
+                js.spawn(get_repo_file_impl(client.clone(), upstream.path, path.clone(), str_path.clone(), visited_repos.clone()));
             }
             if let Some(v) = check_result(&mut js).await {
                 return Ok(v);
@@ -150,12 +164,21 @@ fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, vi
 }
 enum StoredRepoPath{
     File(Vec<u8>),
-    DirListing(String),
+    UpstreamDirListing(String),
+    DirListing(HashSet<String>),
 }
 impl StoredRepoPath {
-    pub fn to_return(self) -> Return {
+    pub fn to_return(self, path: &str, repo:&str) -> Return {
         match self {
-            Self::DirListing(v) => Return::Content((Status::Ok, TypedContent::html(Cow::Owned(v.into_bytes())))),
+            Self::UpstreamDirListing(v) => Return::Content((Status::Ok, TypedContent::html(Cow::Owned(v.into_bytes())))),
+            Self::DirListing(v) => {
+                let mut out = "<!DOCTYPE HTML><html><body>".to_string();
+                for entry in v {
+                    out.push_str(&format!(r#"<a href="/{repo}/{path}/{entry}">{entry}</a>"#));
+                }
+                out.push_str("</body></html>");
+                Return::Content((Status::Ok, TypedContent::html(Cow::Owned(out.into_bytes()))))
+            },
             Self::File(v) => Return::Content((Status::Ok, TypedContent::binary(Cow::Owned(v)))),
         }
     }
@@ -206,7 +229,7 @@ async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream
                     return Err(vec![GetRepoFileError::UpstreamError]);
                 }
             };
-            Ok(StoredRepoPath::DirListing(body.to_string()))
+            Ok(StoredRepoPath::UpstreamDirListing(body.to_string()))
         }
         _ => {
             if stores_remote_upstream {
@@ -267,7 +290,7 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, V
             }
         }
         Ok(mut v) => {
-            let mut out = "<!DOCTYPE HTML><html><body>".to_string();
+            let mut out = HashSet::new();
             loop {
                 let entry = match v.next_entry().await {
                     Err(err) => {
@@ -284,9 +307,8 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, V
                     }
                     Ok(v) => v,
                 };
-                out.push_str(&format!(r#"<a href="{entry}">{entry}</a>"#));
+                out.insert(entry);
             }
-            out.push_str("</body></html>");
             Ok(StoredRepoPath::DirListing(out))
         }
     }
