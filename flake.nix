@@ -66,11 +66,11 @@
           OPENSSL_LIB_DIR = pkgs.openssl.out + "/lib";
 
           meta = {
-#            description = "A Discord Bot";
-#            homepage = "https://github.com/Me-n-the-Boys/MeAndTheBoysBot";
+            description = "A Maven-Repository Server";
+            homepage = "https://github.com/C0D3-M4513R/maven-repo";
             license = nixpkgs.lib.licenses.unfree; #This repo has no license and should be taken as All-Rights-Reserved.
             maintainers = [];
-            mainProgram = "mailserver-web";
+            mainProgram = "maven-repo";
           };
         };
         docker = pkgs.dockerTools.buildLayeredImage {
