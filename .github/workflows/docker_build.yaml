@@ -1,0 +1,60 @@
+name: build docker
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  build:
+    permissions:
+      actions: write #manage cache
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            system: x86_64-linux
+            runner: ubuntu-24.04
+          - arch: arm64
+            system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # Check out the package
+      - uses: actions/checkout@v4
+
+      # Install Nix and cache its store
+      # https://github.com/nix-community/cache-nix-action/issues/60#issuecomment-2691276764
+      #      - uses: cachix/install-nix-action@v30
+      #        with:
+      #          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: nixbuild/nix-quick-install-action@v30
+      - name: Restore and cache Nix store
+        uses: nix-community/cache-nix-action@v6
+        continue-on-error: true
+        with:
+          # restore and save a cache using this key
+          primary-key: nix-${{ runner.os }}-${{matrix.arch}}-${{ hashFiles('**/*.nix') }}
+          # if there's no cache hit, restore a cache by this prefix
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          # collect garbage until Nix store size (in bytes) is at most this number
+          # before trying to save a new cache
+          gc-max-store-size-linux: 1073741824
+          # do purge caches
+          purge: true
+          # purge all versions of the cache
+          purge-prefixes: cache-${{ runner.os }}-${{matrix.arch}}-
+          # created more than this number of seconds ago relative to the start of the `Post Restore` phase
+          purge-created: 0
+          # except the version with the `primary-key`, if it exists
+          purge-primary-key: never
+
+      # Build the package defined in the Nix Flake
+      - name: Build the derivation defined in the Nix Flake
+        run: nix --extra-experimental-features nix-command --extra-experimental-features flakes build .#$(yq .package.name Cargo.toml) -L
