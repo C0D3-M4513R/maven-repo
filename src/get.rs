@@ -99,7 +99,7 @@ fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, st
 
         if config.upstreams.is_empty() {
             let path = Path::new(&repo).join(path);
-            serve_repository_stored_path(&path, true).await
+             serve_repository_stored_path(path, true).await
         } else {
             let mut js = JoinSet::new();
             let mut local_upstream = Vec::new();
@@ -144,6 +144,10 @@ fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, st
                 out
             };
 
+            if config.stores_remote_upstream {
+                let path = Path::new(&repo).join(&path);
+                js.spawn(serve_repository_stored_path(path, true));
+            }
             for upstream in local_upstream {
                 js.spawn(get_repo_file_impl(client.clone(), upstream.path, path.clone(), str_path.clone(), visited_repos.clone()));
             }
@@ -172,11 +176,11 @@ impl StoredRepoPath {
         match self {
             Self::UpstreamDirListing(v) => Return::Content((Status::Ok, TypedContent::html(Cow::Owned(v.into_bytes())))),
             Self::DirListing(v) => {
-                let mut out = "<!DOCTYPE HTML><html><body>".to_string();
+                let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_string();
                 for entry in v {
-                    out.push_str(&format!(r#"<a href="/{repo}/{path}/{entry}">{entry}</a>"#));
+                    out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
                 }
-                out.push_str("</body></html>");
+                out.push_str("</ul></body></html>");
                 Return::Content((Status::Ok, TypedContent::html(Cow::Owned(out.into_bytes()))))
             },
             Self::File(v) => Return::Content((Status::Ok, TypedContent::binary(Cow::Owned(v)))),
@@ -234,6 +238,11 @@ async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream
         _ => {
             if stores_remote_upstream {
                 let path = Path::new(&repo).join(path);
+                if let Some(parent) = path.parent() {
+                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                        log::error!("Error creating directories to {}: {err}", path.display());
+                    }
+                }
                 match tokio::fs::File::create_new(&path)
                         .await
                 {
@@ -260,13 +269,13 @@ async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream
         }
     }
 }
-async fn serve_repository_stored_path(path: &PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     match tokio::fs::read(&path).await {
         Ok(v) => Ok(StoredRepoPath::File(v)),
         Err(err) => {
             match err.kind(){
                 ErrorKind::IsADirectory if display_dir => {
-                    serve_repository_stored_dir(path).await
+                    serve_repository_stored_dir(&path).await
                 }
                 ErrorKind::NotFound => Err(vec![GetRepoFileError::NotFound]),
                 _ => {
