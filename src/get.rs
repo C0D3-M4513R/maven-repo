@@ -125,9 +125,6 @@ async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileEr
 async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
     let mut start = Instant::now();
     let mut next;
-    next = Instant::now();
-    log::info!("{repo}: check_already_visited took {}µs", (next-start).as_micros());
-    core::mem::swap(&mut start, &mut next);
 
     let mut errors = Vec::new();
     let mut out = Vec::new();
