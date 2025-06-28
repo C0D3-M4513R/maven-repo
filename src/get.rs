@@ -126,7 +126,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
     let mut start = Instant::now();
     let mut next;
     next = Instant::now();
-    log::info!("{repo}: check_already_visited took {}ns", (next-start).as_nanos());
+    log::info!("{repo}: check_already_visited took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let mut errors = Vec::new();
@@ -138,7 +138,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
     };
     out.push((repo.to_string(), config.clone()));
     next = Instant::now();
-    log::info!("{repo}: get_repo_config took {}ns", (next-start).as_nanos());
+    log::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let mut js = JoinSet::new();
@@ -178,7 +178,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
         }
     }
     next = Instant::now();
-    log::info!("{repo}: collecting all configs took {}ns", (next-start).as_nanos());
+    log::info!("{repo}: collecting all configs took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     (out, errors)
@@ -189,7 +189,7 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
 
     let (configs, mut errors) = get_repo_look_locations(repo.as_str()).await;
     next = Instant::now();
-    log::info!("{repo}: get_repo_look_locations took {}ns", (next-start).as_nanos());
+    log::info!("{repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let mut js = JoinSet::new();
@@ -232,12 +232,12 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
         core::mem::swap(&mut start, &mut next);
-        log::info!("{repo}: final resolve took took {}ns (skipped remotes, as the information could be locally sourced)", (next-start).as_nanos());
+        log::info!("{repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
         return Ok(v);
     }
 
     next = Instant::now();
-    log::info!("{repo}: local resolve took took {}ns", (next-start).as_nanos());
+    log::info!("{repo}: local resolve took took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
     if !path.file_name().map_or(false, |v|v.to_str().map_or(false, |v|v.contains("."))) {
         errors.push(GetRepoFileError::FileContainsNoDot);
@@ -258,10 +258,13 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
     }
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        log::info!("{repo}: final resolve took took {}ns (contacted remotes)", (next-start).as_nanos());
+        log::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
+    next = Instant::now();
+    log::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
 
     Err(errors)
 }
