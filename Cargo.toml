@@ -22,3 +22,8 @@ quick-xml = { version = "0.37.5" , features = ["serde"]}
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+
+[profile.release]
+lto = true
+strip = true
