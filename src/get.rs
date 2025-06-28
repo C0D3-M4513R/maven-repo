@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
 use rocket::State;
 use tokio::io::AsyncWriteExt;
@@ -24,7 +25,7 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
     let str_path = match path.to_str() {
         None => return Return::Content{
             status: Status::InternalServerError,
-            content: GetRepoFileError::InvalidUTF8.get_err().as_bytes().into(),
+            content: GetRepoFileError::InvalidUTF8.get_err_bytes(),
             content_type: ContentType::Text,
             header_map: Default::default(),
         },
@@ -39,12 +40,14 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
                 out.push_str("No error reported, despite being in an error state.");
                 out.push('\n');
             }
+            let mut can_404 = true;
             for err in v {
-                out.push_str(err.get_err());
+                can_404 &= err.can_404();
+                out.push_str(err.get_err().as_ref());
                 out.push('\n');
             }
             Return::Content{
-                status: Status::BadRequest,
+                status: if can_404 { Status::NotFound } else { Status::InternalServerError },
                 content: out.into_bytes().into(),
                 content_type: ContentType::Text,
                 header_map: Default::default(),
@@ -64,21 +67,40 @@ enum GetRepoFileError{
     ReadDirectoryEntryNonUTF8Name,
     Panicked,
     InvalidUTF8,
-    UpstreamError,
+    UpstreamRequestError,
+    UpstreamBodyReadError,
+    UpstreamStatus(StatusCode),
+    FileContainsNoDot,
 }
 impl GetRepoFileError {
-    const fn get_err(self) -> &'static str {
+    fn can_404(&self) -> bool {
         match self {
-            Self::ReadConfig => "Error reading repo config",
-            Self::ParseConfig => "Error parsing repo config",
-            Self::NotFound => "File or Directory could not be found",
-            Self::ReadFile => "Error whilst reading file",
-            Self::ReadDirectory => "Error whist reading directory",
-            Self::ReadDirectoryEntry => "Error whist reading directory entries",
-            Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names",
-            Self::Panicked => "Error: implementation panicked",
-            Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters",
-            Self::UpstreamError => "Upstream did not deliver a file",
+            Self::NotFound => true,
+            Self::UpstreamStatus(code) if code.is_client_error() => true,
+            _ => false,
+        }
+    }
+    fn get_err_bytes(self) -> Cow<'static,[u8]> {
+        match self.get_err(){
+            Cow::Borrowed(v) => Cow::Borrowed(v.as_bytes()),
+            Cow::Owned(v) => Cow::Owned(v.into_bytes()),
+        }
+    }
+    fn get_err(self) -> Cow<'static,str> {
+        match self {
+            Self::ReadConfig => "Error reading repo config".into(),
+            Self::ParseConfig => "Error parsing repo config".into(),
+            Self::NotFound => "File or Directory could not be found".into(),
+            Self::ReadFile => "Error whilst reading file".into(),
+            Self::ReadDirectory => "Error whist reading directory".into(),
+            Self::ReadDirectoryEntry => "Error whist reading directory entries".into(),
+            Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names".into(),
+            Self::Panicked => "Error: implementation panicked".into(),
+            Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters".into(),
+            Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream".into(),
+            Self::UpstreamBodyReadError => "Error: Failed to read the response of the Upstream".into(),
+            Self::UpstreamStatus(status) => format!("Upstream repo responded with a non 200 status code: {status}").into(),
+            Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which don't contain a '.' in them".into(),
         }
     }
 }
@@ -214,6 +236,10 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
     next = Instant::now();
     core::mem::swap(&mut start, &mut next);
     log::info!("{repo}: local resolve took took {}ns", (next-start).as_nanos());
+    if !path.file_name().map_or(false, |v|v.to_str().map_or(false, |v|v.contains("."))) {
+        errors.push(GetRepoFileError::FileContainsNoDot);
+        return Err(errors);
+    }
 
     let mut upstreams = HashSet::new();
     for (repo, config) in configs {
@@ -238,18 +264,11 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
 }
 enum StoredRepoPath{
     File(Vec<u8>),
-    UpstreamDirListing(String),
     DirListing(HashSet<String>),
 }
 impl StoredRepoPath {
     pub fn to_return(self, path: &str, repo:&str) -> Return {
         match self {
-            Self::UpstreamDirListing(v) => Return::Content{
-                status: Status::Ok,
-                content: v.into_bytes().into(),
-                content_type: ContentType::HTML,
-                header_map: Default::default(),
-            },
             Self::DirListing(v) => {
                 let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_string();
                 for entry in v {
@@ -281,67 +300,56 @@ async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream
         .await {
         Err(err) => {
             log::warn!("Error contacting Upstream repo: {err}");
-            return Err(vec![GetRepoFileError::UpstreamError])
+            return Err(vec![GetRepoFileError::UpstreamRequestError])
         },
         Ok(v) => v,
     };
-    if response.status() != reqwest::StatusCode::OK {
-        log::warn!("Error contacting Upstream repo didn't respond with Ok: {response:?}");
-        return Err(vec![GetRepoFileError::UpstreamError]);
+    match response.status() {
+        StatusCode::OK => {},
+        StatusCode::NOT_FOUND => return Err(vec![GetRepoFileError::NotFound]),
+        code => {
+            log::warn!("Error contacting Upstream repo didn't respond with Ok: {code}");
+            return Err(vec![GetRepoFileError::UpstreamStatus(code)]);
+        }
     }
-    let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).cloned();
     let body = match response.bytes().await {
         Err(err) => {
             log::warn!("Error contacting Upstream repo: {err}");
-            return Err(vec![GetRepoFileError::UpstreamError]);
+            return Err(vec![GetRepoFileError::UpstreamBodyReadError]);
         }
         Ok(v) => v,
     };
 
-    match content_type {
-        Some(v) if v.as_bytes().starts_with(b"text/html") => {
-            let body = match core::str::from_utf8(&*body) {
-                Ok(v) => v,
-                Err(err) => {
-                    log::warn!("Repo sent html, but response isn't utf-8: {err}");
-                    return Err(vec![GetRepoFileError::UpstreamError]);
-                }
-            };
-            Ok(StoredRepoPath::UpstreamDirListing(body.to_string()))
+    if stores_remote_upstream {
+        let path = Path::new(&repo).join(path);
+        if let Some(parent) = path.parent() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                log::error!("Error creating directories to {}: {err}", path.display());
+            }
         }
-        _ => {
-            if stores_remote_upstream {
-                let path = Path::new(&repo).join(path);
-                if let Some(parent) = path.parent() {
-                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                        log::error!("Error creating directories to {}: {err}", path.display());
-                    }
-                }
-                match tokio::fs::File::create_new(&path)
-                        .await
-                {
-                    Ok(mut v) => {
-                        match v.write_all(&*body).await {
+        match tokio::fs::File::create_new(&path)
+                .await
+        {
+            Ok(mut v) => {
+                match v.write_all(&*body).await {
+                    Ok(()) => {},
+                    Err(err) => {
+                        log::error!("Error writing to File {}: {err}", path.display());
+                        match tokio::fs::remove_file(&path).await {
                             Ok(()) => {},
                             Err(err) => {
-                                log::error!("Error writing to File {}: {err}", path.display());
-                                match tokio::fs::remove_file(&path).await {
-                                    Ok(()) => {},
-                                    Err(err) => {
-                                        log::error!("Error deleting File after error writing to File {}: {err}", path.display());
-                                    }
-                                }
+                                log::error!("Error deleting File after error writing to File {}: {err}", path.display());
                             }
                         }
-                    },
-                    Err(v) => {
-                        log::error!("Error Creating File: {v}");
                     }
                 }
+            },
+            Err(v) => {
+                log::error!("Error Creating File: {v}");
             }
-            Ok(StoredRepoPath::File(Vec::from(&*body)))
         }
     }
+    Ok(StoredRepoPath::File(Vec::from(&*body)))
 }
 async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     match tokio::fs::read(&path).await {
