@@ -2,13 +2,12 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use rocket::http::{ContentType, Status};
 use rocket::State;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 use crate::repository::{RemoteUpstream, Repository, Upstream};
 use crate::status::Return;
 
@@ -32,8 +31,7 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
         Some(v) => Arc::<str>::from(v),
     };
 
-    let set = Arc::new(Mutex::new(HashSet::new()));
-    match get_repo_file_impl((*client).clone(), repo.clone(), Arc::from(path), str_path.clone(), set).await {
+    match get_repo_file_impl((*client).clone(), repo.clone(), Arc::from(path), str_path.clone()).await {
         Ok(v) => v.to_return(str_path.as_ref(), &repo),
         Err(v) => {
             let mut out = String::new();
@@ -59,8 +57,6 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
 enum GetRepoFileError{
     ReadConfig,
     ParseConfig,
-    RecursionLoop,
-    RecursionTooMany,
     NotFound,
     ReadFile,
     ReadDirectory,
@@ -75,8 +71,6 @@ impl GetRepoFileError {
         match self {
             Self::ReadConfig => "Error reading repo config",
             Self::ParseConfig => "Error parsing repo config",
-            Self::RecursionLoop => "Loop in Repository groups",
-            Self::RecursionTooMany => "Repository upstream delegates to too many repos",
             Self::NotFound => "File or Directory could not be found",
             Self::ReadFile => "Error whilst reading file",
             Self::ReadDirectory => "Error whist reading directory",
@@ -89,7 +83,7 @@ impl GetRepoFileError {
     }
 }
 
-async fn get_repo_config(repo: &str) -> Result<Repository, GetRepoFileError> {
+async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
     let config = match tokio::fs::read_to_string(format!(".{repo}.json")).await {
         Err(err) => {
             log::error!("Error reading repo config: {err}");
@@ -106,80 +100,141 @@ async fn get_repo_config(repo: &str) -> Result<Repository, GetRepoFileError> {
     };
     Ok(config)
 }
-fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, str_path: Arc<str>, visited_repos: Arc<Mutex<HashSet<String>>>) -> Pin<Box<dyn Future<Output = Result<StoredRepoPath, Vec<GetRepoFileError>>> + Send>> {
-    Box::pin(async move{
-        check_already_visited(&repo, &visited_repos).await?;
+async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
+    let mut start = Instant::now();
+    let mut next;
+    next = Instant::now();
+    core::mem::swap(&mut start, &mut next);
+    log::info!("{repo}: check_already_visited took {}ns", (next-start).as_nanos());
 
-        let config = get_repo_config(&repo).await.map_err(|v|vec![v])?;
+    let mut errors = Vec::new();
+    let mut out = Vec::new();
 
-        if config.upstreams.is_empty() {
-            let path = Path::new(&repo).join(path);
-             serve_repository_stored_path(path, true).await
-        } else {
-            let mut js = JoinSet::new();
-            let mut local_upstream = Vec::new();
-            let mut remote_upstream = Vec::new();
+    let config = match get_repo_config(Cow::Borrowed(repo)).await {
+        Ok(v) => v,
+        Err(e) => return (Vec::new(), vec![e]),
+    };
+    out.push((repo.to_string(), config.clone()));
+    next = Instant::now();
+    core::mem::swap(&mut start, &mut next);
+    log::info!("{repo}: get_repo_config took {}ns", (next-start).as_nanos());
 
-            for upstream in config.upstreams {
-                match upstream {
-                    Upstream::Local(upstream) => local_upstream.push(upstream),
-                    Upstream::Remote(remote) => remote_upstream.push(remote),
+    let mut js = JoinSet::new();
+    let mut visited = HashSet::new();
+
+    fn check_repo(js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>, repo: &str, config: Repository, visited: &mut HashSet<String>) {
+        for upstream in config.upstreams{
+            let upstream = match upstream {
+                Upstream::Local(upstream) => upstream,
+                Upstream::Remote(_) => continue,
+            };
+            if visited.insert(upstream.path.clone()) {
+                js.spawn(async move {
+                    let path = upstream.path;
+                    let out = get_repo_config(Cow::Borrowed(path.as_str())).await?;
+                    Ok((path, out))
+                });
+            } else {
+                log::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
+            }
+        };
+    }
+    check_repo(&mut js, &repo, config, &mut visited);
+    while let Some(task) = js.join_next().await {
+        match task {
+            Ok(Ok((path, config))) => {
+                check_repo(&mut js, &repo, config.clone(), &mut visited);
+                out.push((path, config));
+            },
+            Ok(Err(v)) => {
+                errors.push(v);
+            },
+            Err(err) => {
+                log::error!("{repo}: Panicked whilst trying to resolve repo config: {err}");
+                errors.push(GetRepoFileError::Panicked);
+            }
+        }
+    }
+
+    (out, errors)
+}
+async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+    let mut start = Instant::now();
+    let mut next;
+
+    let (configs, mut errors) = get_repo_look_locations(repo.as_str()).await;
+    next = Instant::now();
+    core::mem::swap(&mut start, &mut next);
+    log::info!("{repo}: get_repo_look_locations took {}ns", (next-start).as_nanos());
+
+    let mut js = JoinSet::new();
+
+    let mut check_result = async |js:&mut JoinSet<_>|{
+        let mut out = None; 
+        while let Some(task) = js.join_next().await {
+            match task {
+                Ok(Ok(v)) => {
+                    out = match (out, v) {
+                        (Some(StoredRepoPath::DirListing(mut out)), StoredRepoPath::DirListing(v)) => {
+                            out.extend(v);
+                            Some(StoredRepoPath::DirListing(out))
+                        }
+                        (Some(out), _) => {
+                            js.abort_all();
+                            return Some(out)
+                        },
+                        (None, v) => {
+                            Some(v)
+                        }
+                    };
+                },
+                Ok(Err(mut v)) => {
+                    errors.append(&mut v);
+                },
+                Err(err) => {
+                    log::error!("Panicked whilst trying to resolve repo file: {err}");
+                    errors.push(GetRepoFileError::Panicked);
                 }
             }
-            
-            let mut errors = Vec::new();
-            let mut check_result = async |js:&mut JoinSet<_>|{
-                let mut out = None; 
-                while let Some(task) = js.join_next().await {
-                    match task {
-                        Ok(Ok(v)) => {
-                            out = match (out, v) {
-                                (Some(StoredRepoPath::DirListing(mut out)), StoredRepoPath::DirListing(v)) => {
-                                    out.extend(v);
-                                    Some(StoredRepoPath::DirListing(out))
-                                }
-                                (Some(out), _) => {
-                                    js.abort_all();
-                                    return Some(out)
-                                },
-                                (None, v) => {
-                                    Some(v)
-                                }
-                            };
-                        },
-                        Ok(Err(mut v)) => {
-                            errors.append(&mut v);
-                        },
-                        Err(err) => {
-                            log::error!("Panicked whilst trying to resolve repo file: {err}");
-                            errors.push(GetRepoFileError::Panicked);
-                        }
-                    }
-                };
-                out
+        };
+        out
+    };
+
+    for (repo, _) in &configs {
+        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), true));
+    }
+
+    if let Some(v) = check_result(&mut js).await {
+        next = Instant::now();
+        core::mem::swap(&mut start, &mut next);
+        log::info!("{repo}: final resolve took took {}ns (skipped remotes, as the information could be locally sourced)", (next-start).as_nanos());
+        return Ok(v);
+    }
+
+    next = Instant::now();
+    core::mem::swap(&mut start, &mut next);
+    log::info!("{repo}: local resolve took took {}ns", (next-start).as_nanos());
+
+    let mut upstreams = HashSet::new();
+    for (repo, config) in configs {
+        for upstream in config.upstreams {
+            let upstream = match upstream {
+                Upstream::Local(_) => continue,
+                Upstream::Remote(v) => v,
             };
-
-            if config.stores_remote_upstream {
-                let path = Path::new(&repo).join(&path);
-                js.spawn(serve_repository_stored_path(path, true));
+            if upstreams.insert(upstream.url.clone()) {
+                js.spawn(serve_remote_repository(client.clone(), upstream, str_path.clone(), repo.clone(), path.clone(), config.stores_remote_upstream));
             }
-            for upstream in local_upstream {
-                js.spawn(get_repo_file_impl(client.clone(), upstream.path, path.clone(), str_path.clone(), visited_repos.clone()));
-            }
-            if let Some(v) = check_result(&mut js).await {
-                return Ok(v);
-            }
-
-            for remote in remote_upstream {
-                js.spawn(serve_remote_repository(client.clone(), remote, str_path.clone(), repo.clone(), path.clone(), config.stores_remote_upstream, visited_repos.clone()));
-            }
-            if let Some(v) = check_result(&mut js).await {
-                return Ok(v);
-            }
-
-            Err(errors)
         }
-    })
+    }
+    if let Some(v) = check_result(&mut js).await {
+        next = Instant::now();
+        core::mem::swap(&mut start, &mut next);
+        log::info!("{repo}: final resolve took took {}ns (contacted remotes)", (next-start).as_nanos());
+        return Ok(v);
+    }
+
+    Err(errors)
 }
 enum StoredRepoPath{
     File(Vec<u8>),
@@ -217,18 +272,7 @@ impl StoredRepoPath {
         }
     }
 }
-async fn check_already_visited(repo: &String, visited_repos: &Arc<Mutex<HashSet<String>>>) -> Result<(), Vec<GetRepoFileError>> {
-    let mut visited_repos = visited_repos.lock().await;
-    if !visited_repos.insert(repo.clone()) {
-        return Err(vec![GetRepoFileError::RecursionLoop]);
-    }
-    if visited_repos.len() > 1024 {
-        return Err(vec![GetRepoFileError::RecursionTooMany]);
-    }
-    Ok(())
-}
-async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool, visited_repos: Arc<Mutex<HashSet<String>>>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
-    check_already_visited(&remote.url, &visited_repos).await?;
+async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let url = remote.url;
     let response = match client
         .get(format!("{url}/{str_path}"))
