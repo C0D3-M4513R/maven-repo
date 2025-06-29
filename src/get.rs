@@ -228,8 +228,8 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
 
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        core::mem::swap(&mut start, &mut next);
         log::info!("{repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
+        core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
 
