@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
 use tokio::io::AsyncWriteExt;
@@ -12,7 +12,7 @@ use crate::repository::{RemoteUpstream, Repository, Upstream};
 use crate::status::{Content, Return};
 
 #[rocket::get("/<repo>/<path..>")]
-pub async fn get_repo_file(repo: String, path: PathBuf) -> Return {
+pub async fn get_repo_file(repo: &str, path: PathBuf) -> Return {
     if path.iter().any(|v|v == "..") {
         return Return{
             status: Status::BadRequest,
@@ -28,10 +28,10 @@ pub async fn get_repo_file(repo: String, path: PathBuf) -> Return {
             content_type: ContentType::Text,
             header_map: Default::default(),
         },
-        Some(v) => Arc::<str>::from(v),
+        Some(v) => v,
     };
 
-    match get_repo_file_impl(repo.clone(), Arc::from(path), str_path.clone()).await {
+    match get_repo_file_impl(repo, path.as_path(), str_path).await {
         Ok(v) => v.to_return(str_path.as_ref(), &repo),
         Err(v) => {
             let mut out = String::new();
@@ -208,11 +208,11 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
 
     (out, errors)
 }
-async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
-    let (configs, mut errors) = get_repo_look_locations(repo.as_str()).await;
+    let (configs, mut errors) = get_repo_look_locations(repo).await;
     next = Instant::now();
     tracing::info!("{repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
@@ -269,18 +269,25 @@ async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -
         return Err(errors);
     }
 
-    let mut upstreams = HashSet::new();
-    for (repo, config) in configs {
-        for upstream in config.upstreams {
-            let upstream = match upstream {
-                Upstream::Local(_) => continue,
-                Upstream::Remote(v) => v,
-            };
-            if upstreams.insert(upstream.url.clone()) {
-                js.spawn(serve_remote_repository(upstream, str_path.clone(), repo.clone(), path.clone(), config.stores_remote_upstream));
+    //Start requests to upstreams
+    {
+        let mut upstreams = HashSet::new();
+        let remote_str_path = LazyLock::new(||Arc::<str>::from(str_path));
+        let remote_path = LazyLock::new(||Arc::<Path>::from(path));
+        for (repo, config) in configs {
+            for upstream in config.upstreams {
+                let upstream = match upstream {
+                    Upstream::Local(_) => continue,
+                    Upstream::Remote(v) => v,
+                };
+                if upstreams.insert(upstream.url.clone()) {
+                    js.spawn(serve_remote_repository(upstream, remote_str_path.clone(), repo.clone(), remote_path.clone(), config.stores_remote_upstream));
+                }
             }
         }
     }
+
+    //Collect requests from upstreams
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
         tracing::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
