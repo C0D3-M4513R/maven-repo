@@ -408,19 +408,49 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
     }
 }
 async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
-    match tokio::fs::File::open(&path).await {
-        Ok(v) => Ok(StoredRepoPath::File(v)),
-        Err(err) => {
-            match err.kind(){
+    let mut errors = Vec::new();
+    macro_rules! delegate {
+        () => {
+            match serve_repository_stored_dir(&path).await {
+                Ok(v) => return Ok(v),
+                Err(mut err) => errors.append(&mut err),
+            }
+            return Err(errors);
+        }
+    }
+    macro_rules! handle_err {
+        ($err:ident) => {
+            match $err.kind(){
                 ErrorKind::IsADirectory if display_dir => {
-                    serve_repository_stored_dir(&path).await
+                    delegate!();
                 }
-                ErrorKind::NotFound => Err(vec![GetRepoFileError::NotFound]),
+                ErrorKind::NotFound => errors.push(GetRepoFileError::NotFound),
                 _ => {
-                    tracing::warn!("Error reading file: {err}");
-                    Err(vec![GetRepoFileError::ReadFile])
+                    tracing::warn!("Error reading file: {}", $err);
+                    errors.push(GetRepoFileError::ReadFile)
                 },
             }
+            return Err(errors);
+        };
+    }
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(v) => v,
+        Err(err) => {
+            handle_err!(err);
+        }
+    };
+    match file.metadata().await {
+        Ok(v) => {
+            //We only check, if the metadata says, that this is a dir, because non-files might also be able to be read (e.g. unix sockets).
+            //Theoretically everything inside the maven repos should be a directory or file however.
+            if v.is_dir() {
+                delegate!();
+            }
+            
+            Ok(StoredRepoPath::File(file))
+        },
+        Err(err) => {
+            handle_err!(err);
         }
     }
 }
