@@ -9,22 +9,22 @@ use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use crate::repository::{RemoteUpstream, Repository, Upstream};
-use crate::status::Return;
+use crate::status::{Content, Return};
 
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(repo: String, path: PathBuf) -> Return {
     if path.iter().any(|v|v == "..") {
-        return Return::Content{
+        return Return{
             status: Status::BadRequest,
-            content: Cow::Borrowed("`..` is not allowed in the path".as_bytes()),
+            content: Content::Str("`..` is not allowed in the path"),
             content_type: ContentType::Text,
             header_map: Default::default(),
         }
     }
     let str_path = match path.to_str() {
-        None => return Return::Content{
+        None => return Return{
             status: Status::InternalServerError,
-            content: GetRepoFileError::InvalidUTF8.get_err_bytes(),
+            content: GetRepoFileError::InvalidUTF8.get_err_content(),
             content_type: ContentType::Text,
             header_map: Default::default(),
         },
@@ -45,9 +45,9 @@ pub async fn get_repo_file(repo: String, path: PathBuf) -> Return {
                 out.push_str(err.get_err().as_ref());
                 out.push('\n');
             }
-            Return::Content{
+            Return{
                 status: if can_404 { Status::NotFound } else { Status::InternalServerError },
-                content: out.into_bytes().into(),
+                content: Content::String(out),
                 content_type: ContentType::Text,
                 header_map: Default::default(),
             }
@@ -69,6 +69,8 @@ enum GetRepoFileError{
     UpstreamRequestError,
     UpstreamBodyReadError,
     UpstreamStatus(StatusCode),
+    FileCreateFailed,
+    FileWriteFailed,
     FileContainsNoDot,
 }
 impl GetRepoFileError {
@@ -79,10 +81,10 @@ impl GetRepoFileError {
             _ => false,
         }
     }
-    fn get_err_bytes(self) -> Cow<'static,[u8]> {
+    fn get_err_content(self) -> Content {
         match self.get_err(){
-            Cow::Borrowed(v) => Cow::Borrowed(v.as_bytes()),
-            Cow::Owned(v) => Cow::Owned(v.into_bytes()),
+            Cow::Borrowed(v) => Content::Str(v),
+            Cow::Owned(v) => Content::String(v),
         }
     }
     fn get_err(self) -> Cow<'static,str> {
@@ -98,6 +100,8 @@ impl GetRepoFileError {
             Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters".into(),
             Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream".into(),
             Self::UpstreamBodyReadError => "Error: Failed to read the response of the Upstream".into(),
+            Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into".into(),
+            Self::FileWriteFailed => "Error: Failed to write to a local file to contain the upstream's response".into(),
             Self::UpstreamStatus(status) => format!("Upstream repo responded with a non 200 status code: {status}").into(),
             Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which don't contain a '.' in them".into(),
         }
@@ -290,7 +294,8 @@ async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -
     Err(errors)
 }
 enum StoredRepoPath{
-    File(Vec<u8>),
+    File(tokio::fs::File),
+    Upstream(reqwest::Response),
     DirListing(HashSet<String>),
 }
 impl StoredRepoPath {
@@ -304,16 +309,22 @@ impl StoredRepoPath {
                     out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
                 }
                 out.push_str("</ul></body></html>");
-                Return::Content{
+                Return{
                     status: Status::Ok,
-                    content: out.into_bytes().into(),
+                    content: Content::String(out),
                     content_type: ContentType::HTML,
                     header_map: Default::default(),
                 }
             },
-            Self::File(v) => Return::Content{
+            Self::Upstream(v) => Return{
                 status: Status::Ok,
-                content: v.into(),
+                content: Content::Response(v),
+                content_type: ContentType::Binary,
+                header_map: Default::default(),
+            },
+            Self::File(v) => Return{
+                status: Status::Ok,
+                content: Content::File(v),
                 content_type: ContentType::Binary,
                 header_map: Default::default(),
             }
@@ -341,13 +352,6 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             return Err(vec![GetRepoFileError::UpstreamStatus(code)]);
         }
     }
-    let body = match response.bytes().await {
-        Err(err) => {
-            log::warn!("Error contacting Upstream repo: {err}");
-            return Err(vec![GetRepoFileError::UpstreamBodyReadError]);
-        }
-        Ok(v) => v,
-    };
 
     if stores_remote_upstream {
         let path = Path::new(&repo).join(path);
@@ -356,32 +360,48 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 log::error!("Error creating directories to {}: {err}", path.display());
             }
         }
-        match tokio::fs::File::create_new(&path)
+
+        let mut file = match tokio::fs::File::create_new(&path)
                 .await
         {
-            Ok(mut v) => {
-                match v.write_all(&*body).await {
-                    Ok(()) => {},
-                    Err(err) => {
-                        log::error!("Error writing to File {}: {err}", path.display());
-                        match tokio::fs::remove_file(&path).await {
-                            Ok(()) => {},
-                            Err(err) => {
-                                log::error!("Error deleting File after error writing to File {}: {err}", path.display());
-                            }
-                        }
-                    }
-                }
-            },
+            Ok(v) => v,
             Err(v) => {
                 log::error!("Error Creating File: {v}");
+                return Err(vec![GetRepoFileError::FileCreateFailed]);
+            }
+        };
+        let mut response = response;
+        loop {
+            let body = match response.chunk().await {
+                Err(err) => {
+                    log::warn!("Error contacting Upstream repo: {err}");
+                    return Err(vec![GetRepoFileError::UpstreamBodyReadError]);
+                }
+                Ok(Some(v)) => v,
+                Ok(None) => break,
+            };
+
+            match file.write_all(&*body).await {
+                Ok(()) => {},
+                Err(err) => {
+                    log::error!("Error writing to File {}: {err}", path.display());
+                    match tokio::fs::remove_file(&path).await {
+                        Ok(()) => {},
+                        Err(err) => {
+                            log::error!("Error deleting File after error writing to File {}: {err}", path.display());
+                        }
+                    }
+                    return Err(vec![GetRepoFileError::FileWriteFailed]);
+                }
             }
         }
+        Ok(StoredRepoPath::File(file))
+    } else {
+        Ok(StoredRepoPath::Upstream(response))
     }
-    Ok(StoredRepoPath::File(Vec::from(&*body)))
 }
 async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
-    match tokio::fs::read(&path).await {
+    match tokio::fs::File::open(&path).await {
         Ok(v) => Ok(StoredRepoPath::File(v)),
         Err(err) => {
             match err.kind(){
