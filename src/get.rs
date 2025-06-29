@@ -298,6 +298,8 @@ impl StoredRepoPath {
         match self {
             Self::DirListing(v) => {
                 let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_string();
+                let mut v = v.into_iter().collect::<Vec<_>>();
+                v.sort();
                 for entry in v {
                     out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
                 }
