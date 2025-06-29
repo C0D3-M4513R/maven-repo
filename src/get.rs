@@ -111,22 +111,22 @@ impl GetRepoFileError {
 async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
     match crate::REPOSITORIES.read_async(repo.as_ref(), |_, value|value.clone()).await {
         Some(v) => {
-            log::info!("Using cached repo config");
+            tracing::info!("Using cached repo config");
             return Ok(v)
         },
         None => {},
     }
-    log::info!("Getting repo config");
+    tracing::info!("Getting repo config");
     let config = match tokio::fs::read_to_string(format!(".{repo}.json")).await {
         Err(err) => {
-            log::error!("Error reading repo config: {err}");
+            tracing::error!("Error reading repo config: {err}");
             return Err(GetRepoFileError::ReadConfig);
         }
         Ok(v) => v,
     };
     let config:Repository = match serde_json::from_str(&config) {
         Err(err) => {
-            log::error!("Error parsing repo config: {err}");
+            tracing::error!("Error parsing repo config: {err}");
             return Err(GetRepoFileError::ParseConfig);
         }
         Ok(v) => v,
@@ -134,7 +134,7 @@ async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileEr
     match crate::REPOSITORIES.insert_async(repo.into_owned(), config.clone()).await {
         Ok(()) => {},
         Err((repo, _)) => {
-            log::info!("A cached config already exists for {repo}.");
+            tracing::info!("A cached config already exists for {repo}.");
         }
     }
     Ok(config)
@@ -152,7 +152,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
     };
     out.push((repo.to_string(), config.clone()));
     next = Instant::now();
-    log::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
+    tracing::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let mut js = JoinSet::new();
@@ -181,7 +181,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
                         }
                     }
                 } else {
-                    log::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
+                    tracing::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
                 }
             };
         }
@@ -197,13 +197,13 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
                 errors.push(v);
             },
             Err(err) => {
-                log::error!("{repo}: Panicked whilst trying to resolve repo config: {err}");
+                tracing::error!("{repo}: Panicked whilst trying to resolve repo config: {err}");
                 errors.push(GetRepoFileError::Panicked);
             }
         }
     }
     next = Instant::now();
-    log::info!("{repo}: collecting all configs took {}µs", (next-start).as_micros());
+    tracing::info!("{repo}: collecting all configs took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     (out, errors)
@@ -214,7 +214,7 @@ async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -
 
     let (configs, mut errors) = get_repo_look_locations(repo.as_str()).await;
     next = Instant::now();
-    log::info!("{repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
+    tracing::info!("{repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let mut js = JoinSet::new();
@@ -242,7 +242,7 @@ async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -
                     errors.append(&mut v);
                 },
                 Err(err) => {
-                    log::error!("Panicked whilst trying to resolve repo file: {err}");
+                    tracing::error!("Panicked whilst trying to resolve repo file: {err}");
                     errors.push(GetRepoFileError::Panicked);
                 }
             }
@@ -256,13 +256,13 @@ async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -
 
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        log::info!("{repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
+        tracing::info!("{repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
 
     next = Instant::now();
-    log::info!("{repo}: local resolve took took {}µs", (next-start).as_micros());
+    tracing::info!("{repo}: local resolve took took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
     if !path.file_name().map_or(false, |v|v.to_str().map_or(false, |v|v.contains("."))) {
         errors.push(GetRepoFileError::FileContainsNoDot);
@@ -283,12 +283,12 @@ async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -
     }
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        log::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
+        tracing::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
     next = Instant::now();
-    log::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
+    tracing::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     Err(errors)
@@ -339,7 +339,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         .send()
         .await {
         Err(err) => {
-            log::warn!("Error contacting Upstream repo: {err}");
+            tracing::warn!("Error contacting Upstream repo: {err}");
             return Err(vec![GetRepoFileError::UpstreamRequestError])
         },
         Ok(v) => v,
@@ -348,7 +348,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         StatusCode::OK => {},
         StatusCode::NOT_FOUND => return Err(vec![GetRepoFileError::NotFound]),
         code => {
-            log::warn!("Error contacting Upstream repo didn't respond with Ok: {code}");
+            tracing::warn!("Error contacting Upstream repo didn't respond with Ok: {code}");
             return Err(vec![GetRepoFileError::UpstreamStatus(code)]);
         }
     }
@@ -357,7 +357,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         let path = Path::new(&repo).join(path);
         if let Some(parent) = path.parent() {
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                log::error!("Error creating directories to {}: {err}", path.display());
+                tracing::error!("Error creating directories to {}: {err}", path.display());
             }
         }
 
@@ -366,7 +366,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         {
             Ok(v) => v,
             Err(v) => {
-                log::error!("Error Creating File: {v}");
+                tracing::error!("Error Creating File: {v}");
                 return Err(vec![GetRepoFileError::FileCreateFailed]);
             }
         };
@@ -374,7 +374,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         loop {
             let body = match response.chunk().await {
                 Err(err) => {
-                    log::warn!("Error contacting Upstream repo: {err}");
+                    tracing::warn!("Error contacting Upstream repo: {err}");
                     return Err(vec![GetRepoFileError::UpstreamBodyReadError]);
                 }
                 Ok(Some(v)) => v,
@@ -384,11 +384,11 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             match file.write_all(&*body).await {
                 Ok(()) => {},
                 Err(err) => {
-                    log::error!("Error writing to File {}: {err}", path.display());
+                    tracing::error!("Error writing to File {}: {err}", path.display());
                     match tokio::fs::remove_file(&path).await {
                         Ok(()) => {},
                         Err(err) => {
-                            log::error!("Error deleting File after error writing to File {}: {err}", path.display());
+                            tracing::error!("Error deleting File after error writing to File {}: {err}", path.display());
                         }
                     }
                     return Err(vec![GetRepoFileError::FileWriteFailed]);
@@ -410,7 +410,7 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                 }
                 ErrorKind::NotFound => Err(vec![GetRepoFileError::NotFound]),
                 _ => {
-                    log::warn!("Error reading file: {err}");
+                    tracing::warn!("Error reading file: {err}");
                     Err(vec![GetRepoFileError::ReadFile])
                 },
             }
@@ -424,7 +424,7 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, V
             match err.kind() {
                 ErrorKind::NotFound => Err(vec![GetRepoFileError::NotFound]),
                 _ => {
-                    log::warn!("Error reading directory: {err}");
+                    tracing::warn!("Error reading directory: {err}");
                     Err(vec![GetRepoFileError::ReadDirectory])
                 }
             }
@@ -434,7 +434,7 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, V
             loop {
                 let entry = match v.next_entry().await {
                     Err(err) => {
-                        log::warn!("Error reading directory entry: {err}");
+                        tracing::warn!("Error reading directory entry: {err}");
                         return Err(vec![GetRepoFileError::ReadDirectoryEntry]);
                     }
                     Ok(None) => break,
@@ -442,7 +442,7 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, V
                 };
                 let entry = match entry.file_name().into_string() {
                     Err(_) => {
-                        log::warn!("Error: directory contains entries with non UTF-8 names");
+                        tracing::warn!("Error: directory contains entries with non UTF-8 names");
                         return Err(vec![GetRepoFileError::ReadDirectoryEntryNonUTF8Name]);
                     }
                     Ok(v) => v,

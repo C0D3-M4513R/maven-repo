@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()>{
                     .with_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
             )
             .init();
-        log::info!("Initialized logging");
+        tracing::info!("Initialized logging");
     }
 
     rocket::execute(async_main())
@@ -41,10 +41,10 @@ async fn async_main() -> anyhow::Result<()> {
         tokio::task::spawn(async move {
             signal.recv().await;
             let start = Instant::now();
-            log::info!("Clearing Repository Cache");
+            tracing::info!("Clearing Repository Cache");
             REPOSITORIES.clear_async().await;
             let time = start.elapsed();
-            log::info!("Cleared Repository Cache in {}ns", time.as_nanos());
+            tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
         });
     }
     let  _ = rocket::build()
