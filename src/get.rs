@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
-use rocket::State;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -13,7 +12,7 @@ use crate::repository::{RemoteUpstream, Repository, Upstream};
 use crate::status::Return;
 
 #[rocket::get("/<repo>/<path..>")]
-pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: PathBuf) -> Return {
+pub async fn get_repo_file(repo: String, path: PathBuf) -> Return {
     if path.iter().any(|v|v == "..") {
         return Return::Content{
             status: Status::BadRequest,
@@ -32,7 +31,7 @@ pub async fn get_repo_file(client: &State<reqwest::Client>, repo: String, path: 
         Some(v) => Arc::<str>::from(v),
     };
 
-    match get_repo_file_impl((*client).clone(), repo.clone(), Arc::from(path), str_path.clone()).await {
+    match get_repo_file_impl(repo.clone(), Arc::from(path), str_path.clone()).await {
         Ok(v) => v.to_return(str_path.as_ref(), &repo),
         Err(v) => {
             let mut out = String::new();
@@ -106,6 +105,14 @@ impl GetRepoFileError {
 }
 
 async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
+    match crate::REPOSITORIES.read_async(repo.as_ref(), |_, value|value.clone()).await {
+        Some(v) => {
+            log::info!("Using cached repo config");
+            return Ok(v)
+        },
+        None => {},
+    }
+    log::info!("Getting repo config");
     let config = match tokio::fs::read_to_string(format!(".{repo}.json")).await {
         Err(err) => {
             log::error!("Error reading repo config: {err}");
@@ -120,6 +127,12 @@ async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileEr
         }
         Ok(v) => v,
     };
+    match crate::REPOSITORIES.insert_async(repo.into_owned(), config.clone()).await {
+        Ok(()) => {},
+        Err((repo, _)) => {
+            log::info!("A cached config already exists for {repo}.");
+        }
+    }
     Ok(config)
 }
 async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
@@ -141,28 +154,39 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
     let mut js = JoinSet::new();
     let mut visited = HashSet::new();
 
-    fn check_repo(js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>, repo: &str, config: Repository, visited: &mut HashSet<String>) {
-        for upstream in config.upstreams{
-            let upstream = match upstream {
-                Upstream::Local(upstream) => upstream,
-                Upstream::Remote(_) => continue,
+    async fn check_repo(js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>, repo: &str, config: Repository, visited: &mut HashSet<String>, out: &mut Vec<(String, Repository)>) {
+        let mut configs = vec![(repo.to_string(), config)];
+        while let Some((repo, config)) = configs.pop() {
+            for upstream in config.upstreams{
+                let upstream = match upstream {
+                    Upstream::Local(upstream) => upstream,
+                    Upstream::Remote(_) => continue,
+                };
+                if visited.insert(upstream.path.clone()) {
+                    match crate::REPOSITORIES.read_async(&upstream.path, |_, value|value.clone()).await {
+                        Some(repo) => {
+                            out.push((upstream.path.clone(), repo.clone()));
+                            configs.push((upstream.path.clone(), repo));
+                        },
+                        None => {
+                            js.spawn(async move {
+                                let path = upstream.path;
+                                let out = get_repo_config(Cow::Borrowed(path.as_str())).await?;
+                                Ok((path, out))
+                            });
+                        }
+                    }
+                } else {
+                    log::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
+                }
             };
-            if visited.insert(upstream.path.clone()) {
-                js.spawn(async move {
-                    let path = upstream.path;
-                    let out = get_repo_config(Cow::Borrowed(path.as_str())).await?;
-                    Ok((path, out))
-                });
-            } else {
-                log::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
-            }
-        };
+        }
     }
-    check_repo(&mut js, &repo, config, &mut visited);
+    check_repo(&mut js, &repo, config, &mut visited, &mut out).await;
     while let Some(task) = js.join_next().await {
         match task {
             Ok(Ok((path, config))) => {
-                check_repo(&mut js, &repo, config.clone(), &mut visited);
+                check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
                 out.push((path, config));
             },
             Ok(Err(v)) => {
@@ -180,7 +204,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
 
     (out, errors)
 }
-async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Path>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn get_repo_file_impl(repo: String, path: Arc<Path>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
@@ -249,7 +273,7 @@ async fn get_repo_file_impl(client: reqwest::Client, repo: String, path: Arc<Pat
                 Upstream::Remote(v) => v,
             };
             if upstreams.insert(upstream.url.clone()) {
-                js.spawn(serve_remote_repository(client.clone(), upstream, str_path.clone(), repo.clone(), path.clone(), config.stores_remote_upstream));
+                js.spawn(serve_remote_repository(upstream, str_path.clone(), repo.clone(), path.clone(), config.stores_remote_upstream));
             }
         }
     }
@@ -294,9 +318,9 @@ impl StoredRepoPath {
         }
     }
 }
-async fn serve_remote_repository(client: reqwest::Client, remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let url = remote.url;
-    let response = match client
+    let response = match crate::CLIENT
         .get(format!("{url}/{str_path}"))
         .timeout(remote.timeout)
         .send()
