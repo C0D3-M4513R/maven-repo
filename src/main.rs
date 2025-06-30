@@ -1,12 +1,29 @@
 use std::sync::LazyLock;
 use std::time::Instant;
+use rocket::http::{ContentType, Status};
 use crate::repository::Repository;
+use crate::status::{Content, Return};
 
 mod get;
 mod repository;
 mod status;
+mod auth;
+
+const UNAUTHORIZED: Return = Return{
+    status: Status::Unauthorized,
+    content: Content::Str("Unauthorized"),
+    content_type: ContentType::Text,
+    header_map: None,
+};
+const FORBIDDEN: Return = Return{
+    status: Status::Forbidden,
+    content: Content::Str("Forbidden"),
+    content_type: ContentType::Text,
+    header_map: None,
+};
+
 static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||reqwest::Client::new());
-static REPOSITORIES:LazyLock<scc::HashMap<String, Repository>> = LazyLock::new(||scc::HashMap::new());
+static REPOSITORIES:LazyLock<scc::HashMap<String, (tokio::fs::File, Repository)>> = LazyLock::new(||scc::HashMap::new());
 fn main() -> anyhow::Result<()>{
     match dotenvy::dotenv() {
         Ok(_) => {},

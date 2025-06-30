@@ -5,14 +5,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+use crate::auth::BasicAuthentication;
 use crate::repository::{RemoteUpstream, Repository, Upstream};
 use crate::status::{Content, Return};
 
 #[rocket::get("/<repo>/<path..>")]
-pub async fn get_repo_file(repo: &str, path: PathBuf) -> Return {
+pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>) -> Return {
+    let auth = match auth {
+        Some(Err(err)) => return err,
+        Some(Ok(v)) => Some(v),
+        None => None,
+    };
     if path.iter().any(|v|v == "..") {
         return Return{
             status: Status::BadRequest,
@@ -30,8 +36,25 @@ pub async fn get_repo_file(repo: &str, path: PathBuf) -> Return {
         },
         Some(v) => v,
     };
+    let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
+    let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
-    match get_repo_file_impl(repo, path.as_path(), str_path).await {
+    let config = match get_repo_config(Cow::Borrowed(repo)).await {
+        Ok(v) => v,
+        Err(e) => return Return{
+            status: if e.can_404() {Status::NotFound} else {Status::InternalServerError},
+            content: e.get_err_content(),
+            content_type: ContentType::Text,
+            header_map: Default::default(),
+        }
+    };
+
+    match config.check_auth(rocket::http::Method::Get, auth, str_path) {
+        Err(err) => return err,
+        Ok(_) => {},
+    }
+
+    match get_repo_file_impl(repo, path.as_path(), str_path, config).await {
         Ok(v) => v.to_return(str_path.as_ref(), &repo),
         Err(v) => {
             let mut out = String::new();
@@ -57,6 +80,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf) -> Return {
 
 #[derive(Copy, Clone, Debug)]
 enum GetRepoFileError{
+    OpenConfig,
     ReadConfig,
     ParseConfig,
     NotFound,
@@ -89,6 +113,7 @@ impl GetRepoFileError {
     }
     fn get_err(self) -> Cow<'static,str> {
         match self {
+            Self::OpenConfig => "Error opening repo config file".into(),
             Self::ReadConfig => "Error reading repo config".into(),
             Self::ParseConfig => "Error parsing repo config".into(),
             Self::NotFound => "File or Directory could not be found".into(),
@@ -109,7 +134,7 @@ impl GetRepoFileError {
 }
 
 async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
-    match crate::REPOSITORIES.read_async(repo.as_ref(), |_, value|value.clone()).await {
+    match crate::REPOSITORIES.read_async(repo.as_ref(), |_, (_, value)|value.clone()).await {
         Some(v) => {
             tracing::info!("Using cached repo config");
             return Ok(v)
@@ -117,13 +142,22 @@ async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileEr
         None => {},
     }
     tracing::info!("Getting repo config");
-    let config = match tokio::fs::read_to_string(format!(".{repo}.json")).await {
+    let mut file = match tokio::fs::File::open(format!(".{repo}.json")).await {
+        Err(err) => {
+            tracing::error!("Error opening repo config file: {err}");
+            return Err(GetRepoFileError::OpenConfig);
+        }
+        Ok(v) => v,
+    };
+    let mut config = String::new();
+    match file.read_to_string(&mut config).await {
         Err(err) => {
             tracing::error!("Error reading repo config: {err}");
             return Err(GetRepoFileError::ReadConfig);
         }
         Ok(v) => v,
     };
+    let config = config;
     let config:Repository = match serde_json::from_str(&config) {
         Err(err) => {
             tracing::error!("Error parsing repo config: {err}");
@@ -131,7 +165,7 @@ async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileEr
         }
         Ok(v) => v,
     };
-    match crate::REPOSITORIES.insert_async(repo.into_owned(), config.clone()).await {
+    match crate::REPOSITORIES.insert_async(repo.into_owned(), (file, config.clone())).await {
         Ok(()) => {},
         Err((repo, _)) => {
             tracing::info!("A cached config already exists for {repo}.");
@@ -139,18 +173,14 @@ async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileEr
     }
     Ok(config)
 }
-async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
+async fn get_repo_look_locations(repo: &str, config: Repository) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
     let mut start = Instant::now();
     let mut next;
 
     let mut errors = Vec::new();
     let mut out = Vec::new();
 
-    let config = match get_repo_config(Cow::Borrowed(repo)).await {
-        Ok(v) => v,
-        Err(e) => return (Vec::new(), vec![e]),
-    };
-    out.push((repo.to_string(), config.clone()));
+    out.push((repo.to_owned(), config.clone()));
     next = Instant::now();
     tracing::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
@@ -159,7 +189,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
     let mut visited = HashSet::new();
 
     async fn check_repo(js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>, repo: &str, config: Repository, visited: &mut HashSet<String>, out: &mut Vec<(String, Repository)>) {
-        let mut configs = vec![(repo.to_string(), config)];
+        let mut configs = vec![(repo.to_owned(), config)];
         while let Some((repo, config)) = configs.pop() {
             for upstream in config.upstreams{
                 let upstream = match upstream {
@@ -167,7 +197,7 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
                     Upstream::Remote(_) => continue,
                 };
                 if visited.insert(upstream.path.clone()) {
-                    match crate::REPOSITORIES.read_async(&upstream.path, |_, value|value.clone()).await {
+                    match crate::REPOSITORIES.read_async(&upstream.path, |_, (_, value)|value.clone()).await {
                         Some(repo) => {
                             out.push((upstream.path.clone(), repo.clone()));
                             configs.push((upstream.path.clone(), repo));
@@ -208,11 +238,11 @@ async fn get_repo_look_locations(repo: &str) -> (Vec<(String, Repository)>, Vec<
 
     (out, errors)
 }
-async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
-    let (configs, mut errors) = get_repo_look_locations(repo).await;
+    let (configs, mut errors) = get_repo_look_locations(repo, config).await;
     next = Instant::now();
     tracing::info!("{repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
@@ -309,7 +339,7 @@ impl StoredRepoPath {
     pub fn to_return(self, path: &str, repo:&str) -> Return {
         match self {
             Self::DirListing(v) => {
-                let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_string();
+                let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_owned();
                 let mut v = v.into_iter().collect::<Vec<_>>();
                 v.sort();
                 for entry in v {
