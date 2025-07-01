@@ -12,7 +12,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 rocket = "0.5.1"
 tokio = "1.45.1"
-reqwest = { version = "0.12.20", default-features = false, features = ["rustls-tls", "stream"]}
+reqwest = { version = "0.12.20", default-features = false, features = ["native-tls", "stream"]}
 futures = "0.3.31"
 tokio-util = { version = "0.7.15", features = ["compat"]}
 
