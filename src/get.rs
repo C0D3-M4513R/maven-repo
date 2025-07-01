@@ -128,7 +128,7 @@ impl GetRepoFileError {
             Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into".into(),
             Self::FileWriteFailed => "Error: Failed to write to a local file to contain the upstream's response".into(),
             Self::UpstreamStatus(status) => format!("Upstream repo responded with a non 200 status code: {status}").into(),
-            Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which don't contain a '.' in them".into(),
+            Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which contain a '.' in them".into(),
         }
     }
 }
