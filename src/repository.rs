@@ -18,6 +18,8 @@ pub struct Repository{
     pub publicly_readable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_directory_listings: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_size: Option<u64>,
     #[serde(default)]
     pub upstreams: Vec<Upstream>,
     #[serde(default)]

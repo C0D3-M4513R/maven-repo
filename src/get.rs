@@ -155,7 +155,7 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
                     Upstream::Remote(v) => v,
                 };
                 if upstreams.insert(upstream.url.clone()) {
-                    js.spawn(serve_remote_repository(upstream, remote_str_path.clone(), repo.clone(), remote_path.clone(), config.stores_remote_upstream));
+                    js.spawn(serve_remote_repository(upstream, remote_str_path.clone(), repo.clone(), remote_path.clone(), config.stores_remote_upstream, config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE)));
                 }
             }
         }
@@ -212,7 +212,7 @@ impl StoredRepoPath {
         }
     }
 }
-async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool, limit: u64) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let url = remote.url;
     let response = match crate::CLIENT
         .get(format!("{url}/{str_path}"))
@@ -253,6 +253,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         };
         let mut response = response;
         let mut file = tokio::io::BufWriter::new(file);
+        let mut current_size = 0u64;
         loop {
             let body = match response.chunk().await {
                 Err(err) => {
@@ -262,6 +263,10 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 Ok(Some(v)) => v,
                 Ok(None) => break,
             };
+            current_size += body.len() as u64;
+            if current_size >= limit {
+                return Err(vec![GetRepoFileError::UpstreamFileTooLarge { limit}])
+            }
 
             match file.write_all(&*body).await {
                 Ok(()) => {},

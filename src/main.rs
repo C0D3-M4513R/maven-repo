@@ -24,6 +24,7 @@ const FORBIDDEN: Return = Return{
     content_type: ContentType::Text,
     header_map: None,
 };
+const DEFAULT_MAX_FILE_SIZE:u64 = 4*1024*1024*1024;
 
 static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||reqwest::Client::new());
 static REPOSITORIES:LazyLock<scc::HashMap<String, (tokio::fs::File, Repository)>> = LazyLock::new(||scc::HashMap::new());
