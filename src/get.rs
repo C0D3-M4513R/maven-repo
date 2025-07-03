@@ -123,8 +123,9 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
         out
     };
 
-    for (repo, _) in &configs {
-        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), true));
+    for (repo, repo_config) in &configs {
+        let display_dir = !config.hide_directory_listings.unwrap_or(repo_config.hide_directory_listings.unwrap_or(false));
+        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), display_dir));
     }
 
     if let Some(v) = check_result(&mut js).await {
@@ -284,9 +285,13 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
     let mut errors = Vec::new();
     macro_rules! delegate {
         () => {
-            match serve_repository_stored_dir(&path).await {
-                Ok(v) => return Ok(v),
-                Err(mut err) => errors.append(&mut err),
+            if !display_dir {
+                errors.push(GetRepoFileError::NotFound);
+            } else {
+                match serve_repository_stored_dir(&path).await {
+                    Ok(v) => return Ok(v),
+                    Err(mut err) => errors.append(&mut err),
+                }
             }
             return Err(errors);
         }
