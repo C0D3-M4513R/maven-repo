@@ -10,6 +10,7 @@ mod status;
 mod auth;
 mod err;
 mod put;
+mod maven_metadata;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,
