@@ -1,8 +1,14 @@
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::time::Duration;
 use rocket::http::{ContentType, Status};
 use serde_derive::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
+use tokio::task::JoinSet;
+use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
+use crate::err::GetRepoFileError;
 use crate::status::{Content, Return};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -88,4 +94,121 @@ impl Repository {
         }
         Ok(())
     }
+}
+
+
+pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
+    match crate::REPOSITORIES.read_async(repo.as_ref(), |_, (_, value)|value.clone()).await {
+        Some(v) => {
+            tracing::info!("Using cached repo config");
+            return Ok(v)
+        },
+        None => {},
+    }
+    tracing::info!("Getting repo config");
+    let mut file = match tokio::fs::File::open(format!(".{repo}.json")).await {
+        Err(err) => {
+            return match err.kind() {
+                ErrorKind::NotFound => Err(GetRepoFileError::NotFound),
+                err => {
+                    tracing::error!("Error opening repo config file: {err}");
+                    Err(GetRepoFileError::OpenConfig)
+                },
+            }
+        }
+        Ok(v) => v,
+    };
+    let mut config = String::new();
+    match file.read_to_string(&mut config).await {
+        Err(err) => {
+            return match err.kind() {
+                ErrorKind::NotFound => Err(GetRepoFileError::NotFound),
+                err => {
+                    tracing::error!("Error reading repo config file: {err}");
+                    Err(GetRepoFileError::ReadConfig)
+                },
+            };
+        }
+        Ok(v) => v,
+    };
+    let config = config;
+    let config:Repository = match serde_json::from_str(&config) {
+        Err(err) => {
+            tracing::error!("Error parsing repo config: {err}");
+            return Err(GetRepoFileError::ParseConfig);
+        }
+        Ok(v) => v,
+    };
+    match crate::REPOSITORIES.insert_async(repo.into_owned(), (file, config.clone())).await {
+        Ok(()) => {},
+        Err((repo, _)) => {
+            tracing::info!("A cached config already exists for {repo}.");
+        }
+    }
+    Ok(config)
+}
+pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
+    let mut start = Instant::now();
+    let mut next;
+
+    let mut errors = Vec::new();
+    let mut out = Vec::new();
+
+    out.push((repo.to_owned(), config.clone()));
+    next = Instant::now();
+    tracing::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
+
+    let mut js = JoinSet::new();
+    let mut visited = HashSet::new();
+
+    async fn check_repo(js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>, repo: &str, config: Repository, visited: &mut HashSet<String>, out: &mut Vec<(String, Repository)>) {
+        let mut configs = vec![(repo.to_owned(), config)];
+        while let Some((repo, config)) = configs.pop() {
+            for upstream in config.upstreams{
+                let upstream = match upstream {
+                    Upstream::Local(upstream) => upstream,
+                    Upstream::Remote(_) => continue,
+                };
+                if visited.insert(upstream.path.clone()) {
+                    match crate::REPOSITORIES.read_async(&upstream.path, |_, (_, value)|value.clone()).await {
+                        Some(repo) => {
+                            out.push((upstream.path.clone(), repo.clone()));
+                            configs.push((upstream.path.clone(), repo));
+                        },
+                        None => {
+                            js.spawn(async move {
+                                let path = upstream.path;
+                                let out = get_repo_config(Cow::Borrowed(path.as_str())).await?;
+                                Ok((path, out))
+                            });
+                        }
+                    }
+                } else {
+                    tracing::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
+                }
+            };
+        }
+    }
+    check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
+    while let Some(task) = js.join_next().await {
+        match task {
+            Ok(Ok((path, config))) => {
+                check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
+                out.push((path, config));
+            },
+            Ok(Err(v)) => {
+                errors.push(v);
+            },
+            Err(err) => {
+                tracing::error!("{repo}: Panicked whilst trying to resolve repo config: {err}");
+                errors.push(GetRepoFileError::Panicked);
+            }
+        }
+    }
+    next = Instant::now();
+    tracing::info!("{repo}: collecting all configs took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
+
+    (out, errors)
 }

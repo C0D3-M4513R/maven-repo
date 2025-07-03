@@ -8,6 +8,8 @@ mod get;
 mod repository;
 mod status;
 mod auth;
+mod err;
+mod put;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,
