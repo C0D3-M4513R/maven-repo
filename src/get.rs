@@ -43,7 +43,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let config = match get_repo_config(Cow::Borrowed(repo)).await {
         Ok(v) => v,
         Err(e) => return Return{
-            status: if e.can_404() {Status::NotFound} else {Status::InternalServerError},
+            status: e.get_status_code(),
             content: e.get_err_content(),
             content_type: ContentType::Text,
             header_map: Default::default(),

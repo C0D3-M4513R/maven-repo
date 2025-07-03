@@ -34,13 +34,6 @@ pub enum GetRepoFileError{
     Forbidden,
 }
 impl GetRepoFileError {
-    pub fn can_404(&self) -> bool {
-        match self {
-            Self::NotFound => true,
-            Self::UpstreamStatus(code) if code.is_client_error() => true,
-            _ => false,
-        }
-    }
     pub fn get_err_content(self) -> Content {
         match self.get_err(){
             Cow::Borrowed(v) => Content::Str(v),
@@ -71,6 +64,9 @@ impl GetRepoFileError {
         }
     }
     
+    pub fn get_status_code(self) -> Status {
+        self.allowed_status_codes().drain().next().unwrap_or(Status::InternalServerError)
+    }
     pub fn allowed_status_codes(self) -> HashSet<Status> {
         match self {
             Self::OpenConfig => HashSet::from([Status::InternalServerError]),
