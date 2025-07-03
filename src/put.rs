@@ -27,6 +27,14 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             header_map: Default::default(),
         }
     }
+    if path.has_root() {
+        return Return{
+            status: Status::BadRequest,
+            content: Content::Str("An absolute path is not allowed"),
+            content_type: ContentType::Text,
+            header_map: Default::default(),
+        }
+    }
     let str_path = match path.to_str() {
         None => return Return{
             status: Status::InternalServerError,
