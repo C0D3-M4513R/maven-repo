@@ -67,10 +67,26 @@ async fn async_main() -> anyhow::Result<()> {
         });
     }
     let  _ = rocket::build()
+        .attach(AddSourceLink)
         .mount("/", rocket::routes![
             get::get_repo_file
         ])
         .launch()
         .await?;
     Ok(())
+}
+
+struct AddSourceLink;
+#[rocket::async_trait]
+impl rocket::fairing::Fairing for AddSourceLink {
+    fn info(&self) -> rocket::fairing::Info {
+        rocket::fairing::Info{
+            name: "Add Source Link",
+            kind: rocket::fairing::Kind::Response,
+        }
+    }
+
+    async fn on_response<'r>(&self, _req: &'r rocket::Request<'_>, res: &mut rocket::Response<'r>) {
+        res.set_header(rocket::http::Header::new("X-Powered-By", env!("CARGO_PKG_REPOSITORY")));
+    }
 }
