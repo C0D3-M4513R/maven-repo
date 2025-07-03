@@ -12,7 +12,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 rocket = "0.5.1"
-tokio = "1.45.1"
+tokio = { version = "1.45.1", features = ["io-util"] }
 reqwest = { version = "0.12.20", default-features = false, features = ["native-tls", "stream"]}
 futures = "0.3.31"
 tokio-util = { version = "0.7.15", features = ["compat"]}
@@ -26,6 +26,11 @@ base64 = "0.22.1"
 scc = "2.3.4"
 
 bcrypt = "0.17.0"
+data-encoding = "2.9.0"
+digest = "0.10.7"
+md-5 = "0.10.6"
+sha1-checked = "0.10.0"
+sha2 = "0.10.9"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }

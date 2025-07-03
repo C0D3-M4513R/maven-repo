@@ -71,7 +71,8 @@ async fn async_main() -> anyhow::Result<()> {
     let  _ = rocket::build()
         .attach(AddSourceLink)
         .mount("/", rocket::routes![
-            get::get_repo_file
+            get::get_repo_file,
+            put::put_repo_file,
         ])
         .launch()
         .await?;
