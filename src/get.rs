@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
