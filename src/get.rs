@@ -63,14 +63,17 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 out.push_str("No error reported, despite being in an error state.");
                 out.push('\n');
             }
-            let mut can_404 = true;
+            let mut status_code = None;
             for err in v {
-                can_404 &= err.can_404();
+                match &mut status_code {
+                    None => status_code = Some(err.allowed_status_codes()),
+                    Some(v) => status_code = Some(v.intersection(&err.allowed_status_codes()).copied().collect()),
+                }
                 out.push_str(err.get_err().as_ref());
                 out.push('\n');
             }
             Return{
-                status: if can_404 { Status::NotFound } else { Status::InternalServerError },
+                status: status_code.map(|codes|codes.into_iter().next()).unwrap_or(None).unwrap_or(Status::InternalServerError),
                 content: Content::String(out),
                 content_type: ContentType::Text,
                 header_map: Default::default(),
