@@ -242,7 +242,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             }
         }
 
-        let mut file = match tokio::fs::File::create_new(&path)
+        let file = match tokio::fs::File::create_new(&path)
                 .await
         {
             Ok(v) => v,
@@ -252,6 +252,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             }
         };
         let mut response = response;
+        let mut file = tokio::io::BufWriter::new(file);
         loop {
             let body = match response.chunk().await {
                 Err(err) => {
@@ -276,7 +277,20 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 }
             }
         }
-        Ok(StoredRepoPath::File(file))
+        match file.shutdown().await  {
+            Ok(()) => {},
+            Err(err) => {
+                tracing::error!("Error flushing File {}: {err}", path.display());
+                match tokio::fs::remove_file(&path).await {
+                    Ok(()) => {},
+                    Err(err) => {
+                        tracing::error!("Error deleting File after error flushing File {}: {err}", path.display());
+                    }
+                }
+                return Err(vec![GetRepoFileError::FileFlushFailed]);
+            }
+        }
+        Ok(StoredRepoPath::File(file.into_inner()))
     } else {
         Ok(StoredRepoPath::Upstream(response))
     }
@@ -320,7 +334,7 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
     match file.metadata().await {
         Ok(v) => {
             //We only check, if the metadata says, that this is a dir, because non-files might also be able to be read (e.g. unix sockets).
-            //Theoretically everything inside the maven repos should be a directory or file however.
+            //Theoretically everything inside the maven repos should be a directory or file.
             if v.is_dir() {
                 delegate!();
             }
