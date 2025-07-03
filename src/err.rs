@@ -30,6 +30,7 @@ pub enum GetRepoFileError{
     FileCreateFailed,
     FileWriteFailed,
     FileFlushFailed,
+    FileSeekFailed,
     FileContainsNoDot,
 
     Unauthorized,
@@ -59,6 +60,7 @@ impl GetRepoFileError {
             Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into".into(),
             Self::FileWriteFailed => "Error: Failed to write to a local file to contain the upstream's response".into(),
             Self::FileFlushFailed => "Error: Failed to flush a local file".into(),
+            Self::FileSeekFailed => "Error: Failed to seek a local file".into(),
             Self::UpstreamStatus(status) => format!("Upstream repo responded with a non 200 status code: {status}").into(),
             Self::UpstreamFileTooLarge{limit} => format!("The file is too Large. Max File size in bytes is: {limit}").into(),
             Self::PutFileTooLarge{limit} => format!("The file is too Large. Max File size in bytes is: {limit}").into(),
@@ -88,6 +90,7 @@ impl GetRepoFileError {
             Self::FileCreateFailed => HashSet::from([Status::InternalServerError]),
             Self::FileWriteFailed => HashSet::from([Status::InternalServerError]),
             Self::FileFlushFailed => HashSet::from([Status::InternalServerError]),
+            Self::FileSeekFailed => HashSet::from([Status::InternalServerError]),
             Self::UpstreamStatus(_) => HashSet::from([Status::InternalServerError]),
             Self::UpstreamFileTooLarge{limit: _} => HashSet::from([Status::InsufficientStorage, Status::InternalServerError]),
             Self::PutFileTooLarge{limit: _} => HashSet::from([Status::PayloadTooLarge, Status::InternalServerError]),

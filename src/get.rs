@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
@@ -303,7 +303,16 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 return Err(vec![GetRepoFileError::FileFlushFailed]);
             }
         }
-        Ok(StoredRepoPath::File(file.into_inner()))
+        let mut file = file.into_inner();
+        match file.seek(SeekFrom::Start(0)).await  {
+            Ok(_) => {},
+            Err(err) => {
+                tracing::error!("Error seeking File {}: {err}", path.display());
+                return Err(vec![GetRepoFileError::FileFlushFailed]);
+            }
+        }
+        
+        Ok(StoredRepoPath::File(file))
     } else {
         Ok(StoredRepoPath::Upstream(response))
     }
