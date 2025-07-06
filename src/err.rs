@@ -31,7 +31,7 @@ pub enum GetRepoFileError{
     FileFlushFailed,
     FileSeekFailed,
     FileLockFailed,
-    FileContainsNoDot,
+    FileStartsWithDot,
 }
 impl GetRepoFileError {
     pub const fn to_return(self) -> Return {
@@ -68,7 +68,7 @@ impl GetRepoFileError {
             Self::UpstreamStatus => "Upstream repo responded with a non 200 status code",
             Self::UpstreamFileTooLarge => "The file from the remote is too Large.",
             Self::PutFileTooLarge => "The file is too Large.",
-            Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which contain a '.' in them",
+            Self::FileStartsWithDot => "Error: Refusing to contact upstream about files, which start with a '.'",
         }
     }
 
@@ -105,7 +105,7 @@ impl GetRepoFileError {
             Self::UpstreamStatus =>                 &[Status::InternalServerError],
             Self::UpstreamFileTooLarge =>           &[Status::InsufficientStorage, Status::InternalServerError],
             Self::PutFileTooLarge =>                &[Status::PayloadTooLarge, Status::InternalServerError],
-            Self::FileContainsNoDot =>              &[Status::BadRequest, Status::NotFound, Status::InternalServerError],
+            Self::FileStartsWithDot =>              &[Status::BadRequest, Status::NotFound, Status::InternalServerError],
         }
     }
 }

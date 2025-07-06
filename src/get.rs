@@ -134,8 +134,14 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
     next = Instant::now();
     tracing::info!("{repo}: local resolve took took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
-    if !path.file_name().map_or(false, |v|v.to_str().map_or(false, |v|v.contains("."))) {
-        errors.push(GetRepoFileError::FileContainsNoDot);
+    if path.components().any(|v|match v {
+        Component::Normal(v) => {
+            //valid utf-8 should have been checked earlier
+            v.to_string_lossy().starts_with(".")
+        },
+        _ => false,
+    }) {
+        errors.push(GetRepoFileError::FileStartsWithDot);
         return Err(errors);
     }
 
