@@ -39,7 +39,7 @@
           openssl
         ];
 
-        package = pkgs.rust.packages.beta.rustPlatform.buildRustPackage rec{
+        package = rustPlatform.buildRustPackage rec{
           pname = manifest.name;
           version = manifest.version;
           src = pkgs.lib.cleanSource ./.;
