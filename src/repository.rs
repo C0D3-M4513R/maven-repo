@@ -171,10 +171,10 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
         repo: &str,
         config: Repository,
         visited: &mut HashSet<String>,
-        repository_cache: &HashMap<String, (tokio::fs::File, Repository)>,
         out: &mut Vec<(String, Repository)>
     ) {
         let mut configs = vec![(repo.to_owned(), config)];
+        let repository_cache = crate::REPOSITORIES.read().await;
         while let Some((repo, config)) = configs.pop() {
             for upstream in config.upstreams{
                 let upstream = match upstream {
@@ -201,12 +201,11 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
             };
         }
     }
-    let repository_cache = crate::REPOSITORIES.read().await;
-    check_repo(&mut js, &repo, config.clone(), &mut visited, &*repository_cache, &mut out).await;
+    check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
     while let Some(task) = js.join_next().await {
         match task {
             Ok(Ok((path, config))) => {
-                check_repo(&mut js, &repo, config.clone(), &mut visited, &*repository_cache, &mut out).await;
+                check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
                 out.push((path, config));
             },
             Ok(Err(v)) => {
