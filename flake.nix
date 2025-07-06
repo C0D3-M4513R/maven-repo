@@ -25,7 +25,7 @@
             config.allowUnfree = true;
         };
 
-        rustVersion = pkgs.rust-bin.stable.latest.default;
+        rustVersion = pkgs.rust-bin.beta.latest.default;
 
         rustPlatform = pkgs.makeRustPlatform {
           cargo = rustVersion;
@@ -39,7 +39,7 @@
           openssl
         ];
 
-        package = pkgs.rust.packages.stable.rustPlatform.buildRustPackage rec{
+        package = pkgs.rust.packages.beta.rustPlatform.buildRustPackage rec{
           pname = manifest.name;
           version = manifest.version;
           src = pkgs.lib.cleanSource ./.;
