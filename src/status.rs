@@ -19,14 +19,24 @@ pub enum Content {
     Response(reqwest::Response),
     Str(&'static str),
     String(String),
+    None,
 }
 impl Content {
     fn fill_response(self, response: &mut rocket::response::Builder) {
         match self {
-            Content::Mmap(map) => response.sized_body(None, Cursor::new(map)),
-            Content::Response(upstream_response) => response.streamed_body(upstream_response.bytes_stream().map_err(std::io::Error::other).into_async_read().compat()),
-            Content::Str(data) => response.sized_body(Some(data.len()), Cursor::new(data)),
-            Content::String(data) => response.sized_body(Some(data.len()), Cursor::new(data)),
+            Content::Mmap(map) => {
+                response.sized_body(None, Cursor::new(map));
+            },
+            Content::Response(upstream_response) => {
+                response.streamed_body(upstream_response.bytes_stream().map_err(std::io::Error::other).into_async_read().compat());
+            }
+            Content::Str(data) => {
+                response.sized_body(Some(data.len()), Cursor::new(data));
+            }
+            Content::String(data) => {
+                response.sized_body(Some(data.len()), Cursor::new(data));
+            }
+            Content::None => {},
         };
     }
 }
@@ -40,7 +50,12 @@ impl<'r, 'o:'r> Responder<'r, 'o> for Return {
                 response.header(header);
             }
         }
-        response.header(self.content_type);
+        match self.content{
+            Content::None => {},
+            _ => {
+                response.header(self.content_type);
+            }
+        };
         self.content.fill_response(&mut response);
         Ok(response.finalize())
     }

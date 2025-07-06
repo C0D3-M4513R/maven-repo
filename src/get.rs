@@ -13,9 +13,11 @@ use crate::auth::BasicAuthentication;
 use crate::repository::{get_repo_config, get_repo_look_locations, RemoteUpstream, Repository, Upstream};
 use crate::status::{Content, Return};
 use crate::err::GetRepoFileError;
+use crate::etag::ETagValidator;
+use crate::RequestHeaders;
 
 #[rocket::get("/<repo>/<path..>")]
-pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>) -> Return {
+pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>) -> Return {
     let auth = match auth {
         Some(Err(err)) => return err,
         Some(Ok(v)) => Some(v),
@@ -51,8 +53,9 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(_) => {},
     }
 
-    match get_repo_file_impl(repo, path.as_path(), str_path, config).await {
-        Ok(v) => v.to_return(str_path.as_ref(), &repo),
+    let (metadata, map, hash) = match get_repo_file_impl(repo, path.as_path(), str_path, config).await {
+        Ok(StoredRepoPath::Mmap(v)) => v,
+        Ok(v) => return v.to_return(str_path.as_ref(), &repo),
         Err(v) => {
             let mut out = String::new();
             if v.is_empty() {
@@ -68,13 +71,166 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 out.push_str(err.get_err().as_ref());
                 out.push('\n');
             }
-            Return{
+            return Return{
                 status: status_code.map(|codes|codes.into_iter().next()).unwrap_or(None).unwrap_or(Status::InternalServerError),
                 content: Content::String(out),
                 content_type: ContentType::Text,
                 header_map: Default::default(),
+            };
+        }
+    };
+
+    let mut status = Status::Ok;
+    let mut content = Content::Mmap(map);
+    let content_type = ContentType::Binary;
+    let mut header_map = rocket::http::HeaderMap::new();
+    header_map.add(rocket::http::Header::new("ETag", base64::engine::general_purpose::STANDARD.encode(&*hash)));
+    if let Ok(modification_datetime) = metadata.modified() {
+        let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
+        header_map.add(rocket::http::Header::new("Last-Modified", modification_datetime.to_rfc2822()));
+    }
+
+    // Check for If-None-Match header
+    let mut contains_none_match = false;
+    for i in request_headers.0.get("If-None-Match") {
+        contains_none_match = true;
+        let v = match ETagValidator::parse(i) {
+            Some(ETagValidator::Any) => {
+                content = Content::None;
+                status = Status::NotModified;
+                break
+            },
+            Some(ETagValidator::Tags(v)) => v,
+            None => return Return {
+                status: Status::BadRequest,
+                content: Content::String(format!("Bad If-None-Match header: {i}")),
+                content_type: ContentType::Text,
+                header_map: None,
+            }
+        };
+        //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
+        // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
+        for tag in v {
+            if let Ok(v) = base64::engine::general_purpose::STANDARD.decode(&tag.tag) {
+                if v.len() == hash.len() && v == &*hash {
+                    content = Content::None;
+                    status = Status::NotModified;
+                    break
+                }
             }
         }
+    }
+    // Check for If-Match header
+    if request_headers.0.contains("If-Match") {
+        let mut any_match = false;
+        for i in request_headers.0.get("If-Match") {
+            let v = match ETagValidator::parse(i) {
+                Some(ETagValidator::Any) => {
+                    any_match = true;
+                    break;
+                },
+                Some(ETagValidator::Tags(v)) => v,
+                None => return Return {
+                    status: Status::BadRequest,
+                    content: Content::String(format!("Bad If-Match header: {i}")),
+                    content_type: ContentType::Text,
+                    header_map: None,
+                }
+            };
+            //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
+            // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
+            for tag in v {
+                if let Ok(v) = base64::engine::general_purpose::STANDARD.decode(&tag.tag) {
+                    if v.len() == hash.len() && v == &*hash {
+                        any_match = true;
+                        break
+                    }
+                }
+            }
+        }
+        if !any_match {
+            return Return{
+                status: Status::PreconditionFailed,
+                content: Content::None,
+                content_type: ContentType::Text,
+                header_map: None,
+            }
+        }
+
+    }
+
+    // Check for If-Unmodified-Since and If-Modified-Since
+    if
+        request_headers.0.contains("If-Unmodified-Since") ||
+        //When used in combination with If-None-Match, it is ignored - https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
+        (!contains_none_match && request_headers.0.contains("If-Modified-Since"))
+    {
+        let modification_datetime = match metadata.modified() {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::error!("Failed to get modification time for {}: {err}", path.display());
+                return GetRepoFileError::NotSupportedByOs.to_return()
+            },
+        };
+        let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
+        if !contains_none_match {
+            for i in request_headers.0.get("If-Modified-Since") {
+                match chrono::DateTime::parse_from_rfc2822(i) {
+                    Ok(http_time) => {
+                        if http_time > modification_datetime {
+                            content = Content::None;
+                            status = Status::NotModified;
+                            return Return{
+                                status,
+                                content,
+                                content_type,
+                                header_map: Some(header_map),
+                            };
+                        }
+                    },
+                    Err(err) => {
+                        return Return{
+                            status: Status::BadRequest,
+                            content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
+                            content_type: ContentType::Text,
+                            header_map: None,
+                        }
+                    }
+                }
+            }
+        }
+        for i in request_headers.0.get("If-Unmodified-Since") {
+            match chrono::DateTime::parse_from_rfc2822(i) {
+                Ok(http_time) => {
+                    if http_time <= modification_datetime {
+                        content = Content::None;
+                        status = Status::PreconditionFailed;
+                        return Return{
+                            status,
+                            content,
+                            content_type,
+                            header_map: Some(header_map),
+                        };
+                    }
+                },
+                Err(err) => {
+                    return Return{
+                        status: Status::BadRequest,
+                        content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
+                        content_type: ContentType::Text,
+                        header_map: None,
+                    }
+                }
+            }
+        }
+    }
+
+
+    Return {
+        status,
+        content,
+        content_type,
+        header_map: Some(header_map)
     }
 }
 async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
@@ -177,7 +333,7 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
     Err(errors)
 }
 enum StoredRepoPath{
-    Mmap((memmap2::Mmap, digest::Output<sha3::Sha3_512>)),
+    Mmap((std::fs::Metadata, memmap2::Mmap, digest::Output<sha3::Sha3_512>)),
     Upstream(reqwest::Response),
     DirListing(HashSet<String>),
 }
@@ -205,7 +361,7 @@ impl StoredRepoPath {
                 content_type: ContentType::Binary,
                 header_map: Default::default(),
             },
-            Self::Mmap((map, hash)) => {
+            Self::Mmap((_, map, hash)) => {
                 let mut header_map = rocket::http::HeaderMap::new();
                 let hash = base64::engine::general_purpose::STANDARD.encode(hash);
                 header_map.add(rocket::http::Header::new("ETag", hash));
@@ -322,12 +478,13 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             }
         }
         let file = file.into_std().await;
-        let map = match tokio::task::spawn_blocking(move ||{
+        let (metadata, map) = match tokio::task::spawn_blocking(move ||{
             file.unlock()?;
             file.lock_shared()?;
+            let metadata = file.metadata()?;
             let map = unsafe { memmap2::Mmap::map(&file)}?;
             map.advise(memmap2::Advice::Sequential)?;
-            Ok::<_, std::io::Error>(map)
+            Ok::<_, std::io::Error>((metadata, map))
         }).await {
             Ok(Ok(v)) => v,
             Ok(Err(v)) => {
@@ -339,7 +496,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 return Err(vec![GetRepoFileError::FileLockFailed]);
             }
         };
-        Ok(StoredRepoPath::Mmap((map, hash.finalize())))
+        Ok(StoredRepoPath::Mmap((metadata, map, hash.finalize())))
     } else {
         Ok(StoredRepoPath::Upstream(response))
     }
@@ -375,15 +532,15 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
         };
     }
     match tokio::fs::metadata(&path).await {
-        Ok(v) => {
+        Ok(metadata) => {
             //We only check, if the metadata says, that this is a dir, because non-files might also be able to be read (e.g. unix sockets).
             //Theoretically everything inside the maven repos should be a directory or file.
-            if v.is_dir() {
+            if metadata.is_dir() {
                 delegate!(path);
             }
-            
-            
-            let map = match tokio::task::spawn_blocking(move ||{
+
+
+            let (map, hash) = match tokio::task::spawn_blocking(move ||{
                 let file = match std::fs::File::open(&path) {
                     Ok(v) => v,
                     Err(v) => return (Err(v), path),
@@ -415,9 +572,9 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                     return Err(errors);
                 }
             };
-            
-            Ok(StoredRepoPath::Mmap(map))
-        },
+
+            Ok(StoredRepoPath::Mmap((metadata, map, hash)))
+        }
         Err(err) => {
             handle_err!(err, path);
         }

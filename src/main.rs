@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::LazyLock;
 use std::time::Instant;
 use rocket::http::{ContentType, Status};
+use rocket::request::Outcome;
 use crate::repository::Repository;
 use crate::status::{Content, Return};
 
@@ -13,6 +15,7 @@ mod err;
 mod put;
 mod maven_metadata;
 mod path_info;
+mod etag;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,
@@ -93,5 +96,14 @@ impl rocket::fairing::Fairing for AddSourceLink {
 
     async fn on_response<'r>(&self, _req: &'r rocket::Request<'_>, res: &mut rocket::Response<'r>) {
         res.set_header(rocket::http::Header::new("X-Powered-By", env!("CARGO_PKG_REPOSITORY")));
+    }
+}
+struct RequestHeaders<'a>(pub &'a rocket::http::HeaderMap<'a>);
+#[rocket::async_trait]
+impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
+    type Error = Infallible;
+
+    async fn from_request(request: &'a rocket::Request<'_>) -> Outcome<Self, Self::Error> {
+        Outcome::Success(Self(request.headers()))
     }
 }
