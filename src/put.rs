@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use digest::Digest;
-use rocket::data::{ByteUnit, ToByteUnit};
+use rocket::data::ByteUnit;
 use rocket::http::{ContentType, Status};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;

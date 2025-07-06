@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Instant;
 use rocket::http::{ContentType, Status};
@@ -28,7 +29,7 @@ const FORBIDDEN: Return = Return{
 const DEFAULT_MAX_FILE_SIZE:u64 = 4*1024*1024*1024;
 
 static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||reqwest::Client::new());
-static REPOSITORIES:LazyLock<scc::HashMap<String, (tokio::fs::File, Repository)>> = LazyLock::new(||scc::HashMap::new());
+static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<String, (tokio::fs::File, Repository)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
 fn main() -> anyhow::Result<()>{
     match dotenvy::dotenv() {
         Ok(_) => {},
@@ -64,7 +65,7 @@ async fn async_main() -> anyhow::Result<()> {
             signal.recv().await;
             let start = Instant::now();
             tracing::info!("Clearing Repository Cache");
-            REPOSITORIES.clear_async().await;
+            *REPOSITORIES.write().await = HashMap::new();
             let time = start.elapsed();
             tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
         });

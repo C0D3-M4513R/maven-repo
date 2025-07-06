@@ -167,6 +167,7 @@ impl<'a> PathInfo<'a> {
         })
     }
 
+    #[allow(dead_code)]
     pub async fn get_metadata(&self, repo: &str) -> Result<MavenMetadataReturn, Return> {
         self.get_metadata_int(repo, false, false).await
     }

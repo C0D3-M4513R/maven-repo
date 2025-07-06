@@ -102,10 +102,10 @@ impl Repository {
 
 
 pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
-    match crate::REPOSITORIES.read_async(repo.as_ref(), |_, (_, value)|value.clone()).await {
-        Some(v) => {
+    match crate::REPOSITORIES.read().await.get(repo.as_ref()) {
+        Some((_, v)) => {
             tracing::info!("Using cached repo config");
-            return Ok(v)
+            return Ok(v.clone())
         },
         None => {},
     }
@@ -143,9 +143,9 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFi
         }
         Ok(v) => v,
     };
-    match crate::REPOSITORIES.insert_async(repo.into_owned(), (file, config.clone())).await {
-        Ok(()) => {},
-        Err((repo, _)) => {
+    match crate::REPOSITORIES.write().await.insert(repo.clone().into_owned(), (file, config.clone())) {
+        None => {},
+        Some(_) => {
             tracing::info!("A cached config already exists for {repo}.");
         }
     }
@@ -166,7 +166,14 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
     let mut js = JoinSet::new();
     let mut visited = HashSet::new();
 
-    async fn check_repo(js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>, repo: &str, config: Repository, visited: &mut HashSet<String>, out: &mut Vec<(String, Repository)>) {
+    async fn check_repo(
+        js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>,
+        repo: &str,
+        config: Repository,
+        visited: &mut HashSet<String>,
+        repository_cache: &HashMap<String, (tokio::fs::File, Repository)>,
+        out: &mut Vec<(String, Repository)>
+    ) {
         let mut configs = vec![(repo.to_owned(), config)];
         while let Some((repo, config)) = configs.pop() {
             for upstream in config.upstreams{
@@ -175,10 +182,10 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
                     Upstream::Remote(_) => continue,
                 };
                 if visited.insert(upstream.path.clone()) {
-                    match crate::REPOSITORIES.read_async(&upstream.path, |_, (_, value)|value.clone()).await {
-                        Some(repo) => {
+                    match repository_cache.get(&upstream.path) {
+                        Some((_, repo)) => {
                             out.push((upstream.path.clone(), repo.clone()));
-                            configs.push((upstream.path.clone(), repo));
+                            configs.push((upstream.path.clone(), repo.clone()));
                         },
                         None => {
                             js.spawn(async move {
@@ -194,11 +201,12 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
             };
         }
     }
-    check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
+    let repository_cache = crate::REPOSITORIES.read().await;
+    check_repo(&mut js, &repo, config.clone(), &mut visited, &*repository_cache, &mut out).await;
     while let Some(task) = js.join_next().await {
         match task {
             Ok(Ok((path, config))) => {
-                check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
+                check_repo(&mut js, &repo, config.clone(), &mut visited, &*repository_cache, &mut out).await;
                 out.push((path, config));
             },
             Ok(Err(v)) => {

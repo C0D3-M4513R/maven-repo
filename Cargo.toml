@@ -26,8 +26,6 @@ base64 = "0.22.1"
 chrono = "0.4.41"
 memmap2 = "0.9.5"
 
-scc = "2.3.4"
-
 bcrypt = "0.17.0"
 data-encoding = "2.9.0"
 digest = "0.10.7"
