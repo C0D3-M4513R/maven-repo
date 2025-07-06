@@ -11,6 +11,7 @@ mod auth;
 mod err;
 mod put;
 mod maven_metadata;
+mod path_info;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,

@@ -20,6 +20,7 @@ pub enum GetRepoFileError{
     Panicked,
 
     InvalidUTF8,
+    BadRequestPath,
 
     UpstreamRequestError,
     UpstreamBodyReadError,
@@ -55,6 +56,7 @@ impl GetRepoFileError {
             Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names".into(),
             Self::Panicked => "Error: implementation panicked".into(),
             Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters".into(),
+            Self::BadRequestPath => "Error: Request Path failed sanity checks".into(),
             Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream".into(),
             Self::UpstreamBodyReadError => "Error: Failed to read the response of the Upstream".into(),
             Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into".into(),
@@ -85,6 +87,7 @@ impl GetRepoFileError {
             Self::ReadDirectoryEntryNonUTF8Name => HashSet::from([Status::BadRequest, Status::InternalServerError]),
             Self::Panicked => HashSet::from([Status::InternalServerError]),
             Self::InvalidUTF8 => HashSet::from([Status::BadRequest, Status::InternalServerError]),
+            Self::BadRequestPath => HashSet::from([Status::BadRequest, Status::InternalServerError]),
             Self::UpstreamRequestError => HashSet::from([Status::InternalServerError]),
             Self::UpstreamBodyReadError => HashSet::from([Status::InternalServerError]),
             Self::FileCreateFailed => HashSet::from([Status::InternalServerError]),
