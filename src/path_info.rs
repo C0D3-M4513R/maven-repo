@@ -44,21 +44,11 @@ impl<'a> PathInfo<'a> {
                 Component::ParentDir |
                 Component::RootDir |
                 Component::Prefix(_)
-                => return Err(Return{
-                    status: Status::BadRequest,
-                    content: GetRepoFileError::BadRequestPath.get_err_content(),
-                    content_type: ContentType::Text,
-                    header_map: Default::default(),
-                }),
+                => return Err(GetRepoFileError::BadRequestPath.to_return()),
                 Component::Normal(v) => v,
             };
             let i = match i.to_str() {
-                None => return Err(Return{
-                    status: Status::BadRequest,
-                    content: GetRepoFileError::InvalidUTF8.get_err_content(),
-                    content_type: ContentType::Text,
-                    header_map: Default::default(),
-                }),
+                None => return Err(GetRepoFileError::InvalidUTF8.to_return()),
                 Some(v) => v,
             };
             if file_name.is_none() {

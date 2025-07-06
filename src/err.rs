@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use reqwest::StatusCode;
-use rocket::http::Status;
-use crate::status::Content;
+use rocket::http::{ContentType, Status};
+use crate::status::{Content, Return};
 
 #[derive(Copy, Clone, Debug)]
 pub enum GetRepoFileError{
@@ -36,6 +36,14 @@ pub enum GetRepoFileError{
     FileContainsNoDot,
 }
 impl GetRepoFileError {
+    pub fn to_return(self) -> Return {
+        Return {
+            status: self.get_status_code(),
+            content: self.get_err_content(),
+            content_type: ContentType::Text,
+            header_map: None,
+        }
+    }
     pub fn get_err_content(self) -> Content {
         match self.get_err(){
             Cow::Borrowed(v) => Content::Str(v),
@@ -68,34 +76,41 @@ impl GetRepoFileError {
             Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which contain a '.' in them".into(),
         }
     }
-    
-    pub fn get_status_code(self) -> Status {
-        self.allowed_status_codes().drain().next().unwrap_or(Status::InternalServerError)
+
+    //noinspection RsReplaceMatchExpr - Replacement suggestion makes function non-const
+    pub const fn get_status_code(self) -> Status {
+        match self.allowed_status_codes_slice().first().copied() {
+            Some(v) => v,
+            None => Status::InternalServerError
+        }
     }
     pub fn allowed_status_codes(self) -> HashSet<Status> {
+        HashSet::from_iter(self.allowed_status_codes_slice().into_iter().copied())
+    }
+    pub const fn allowed_status_codes_slice(self) -> &'static [Status] {
         match self {
-            Self::OpenConfig => HashSet::from([Status::InternalServerError]),
-            Self::ReadConfig => HashSet::from([Status::InternalServerError]),
-            Self::ParseConfig => HashSet::from([Status::InternalServerError]),
-            Self::NotFound => HashSet::from([Status::NotFound, Status::InternalServerError]),
-            Self::OpenFile => HashSet::from([Status::InternalServerError]),
-            Self::ReadDirectory => HashSet::from([Status::InternalServerError]),
-            Self::ReadDirectoryEntry => HashSet::from([Status::InternalServerError]),
-            Self::ReadDirectoryEntryNonUTF8Name => HashSet::from([Status::BadRequest, Status::InternalServerError]),
-            Self::Panicked => HashSet::from([Status::InternalServerError]),
-            Self::InvalidUTF8 => HashSet::from([Status::BadRequest, Status::InternalServerError]),
-            Self::BadRequestPath => HashSet::from([Status::BadRequest, Status::InternalServerError]),
-            Self::UpstreamRequestError => HashSet::from([Status::InternalServerError]),
-            Self::UpstreamBodyReadError => HashSet::from([Status::InternalServerError]),
-            Self::FileCreateFailed => HashSet::from([Status::InternalServerError]),
-            Self::FileWriteFailed => HashSet::from([Status::InternalServerError]),
-            Self::FileFlushFailed => HashSet::from([Status::InternalServerError]),
-            Self::FileSeekFailed => HashSet::from([Status::InternalServerError]),
-            Self::FileLockFailed => HashSet::from([Status::InternalServerError]),
-            Self::UpstreamStatus(_) => HashSet::from([Status::InternalServerError]),
-            Self::UpstreamFileTooLarge{limit: _} => HashSet::from([Status::InsufficientStorage, Status::InternalServerError]),
-            Self::PutFileTooLarge{limit: _} => HashSet::from([Status::PayloadTooLarge, Status::InternalServerError]),
-            Self::FileContainsNoDot => HashSet::from([Status::BadRequest, Status::NotFound, Status::InternalServerError]),
+            Self::OpenConfig =>                     &[Status::InternalServerError],
+            Self::ReadConfig =>                     &[Status::InternalServerError],
+            Self::ParseConfig =>                    &[Status::InternalServerError],
+            Self::NotFound =>                       &[Status::NotFound, Status::InternalServerError],
+            Self::OpenFile =>                       &[Status::InternalServerError],
+            Self::ReadDirectory =>                  &[Status::InternalServerError],
+            Self::ReadDirectoryEntry =>             &[Status::InternalServerError],
+            Self::ReadDirectoryEntryNonUTF8Name =>  &[Status::BadRequest, Status::InternalServerError],
+            Self::Panicked =>                       &[Status::InternalServerError],
+            Self::InvalidUTF8 =>                    &[Status::BadRequest, Status::InternalServerError],
+            Self::BadRequestPath =>                 &[Status::BadRequest, Status::InternalServerError],
+            Self::UpstreamRequestError =>           &[Status::InternalServerError],
+            Self::UpstreamBodyReadError =>          &[Status::InternalServerError],
+            Self::FileCreateFailed =>               &[Status::InternalServerError],
+            Self::FileWriteFailed =>                &[Status::InternalServerError],
+            Self::FileFlushFailed =>                &[Status::InternalServerError],
+            Self::FileSeekFailed =>                 &[Status::InternalServerError],
+            Self::FileLockFailed =>                 &[Status::InternalServerError],
+            Self::UpstreamStatus(_) =>              &[Status::InternalServerError],
+            Self::UpstreamFileTooLarge{limit: _} => &[Status::InsufficientStorage, Status::InternalServerError],
+            Self::PutFileTooLarge{limit: _} =>      &[Status::PayloadTooLarge, Status::InternalServerError],
+            Self::FileContainsNoDot =>              &[Status::BadRequest, Status::NotFound, Status::InternalServerError],
         }
     }
 }

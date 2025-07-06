@@ -38,12 +38,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         }
     }
     let str_path = match path.to_str() {
-        None => return Return{
-            status: Status::InternalServerError,
-            content: GetRepoFileError::InvalidUTF8.get_err_content(),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        },
+        None => return GetRepoFileError::InvalidUTF8.to_return(),
         Some(v) => v,
     };
     let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
@@ -51,12 +46,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
 
     let config = match get_repo_config(Cow::Borrowed(repo)).await {
         Ok(v) => v,
-        Err(e) => return Return{
-            status: e.get_status_code(),
-            content: e.get_err_content(),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        }
+        Err(e) => return e.to_return(),
     };
 
     match config.check_auth(rocket::http::Method::Get, auth, str_path) {

@@ -30,28 +30,13 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             _ => false,
         }
     ) {
-        return Return{
-            status: Status::BadRequest,
-            content: GetRepoFileError::BadRequestPath.get_err_content(),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        }
+        return GetRepoFileError::BadRequestPath.to_return();
     }
     if path.has_root() {
-        return Return{
-            status: Status::BadRequest,
-            content: GetRepoFileError::BadRequestPath.get_err_content(),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        }
+        return GetRepoFileError::BadRequestPath.to_return();
     }
     let str_path = match path.to_str() {
-        None => return Return{
-            status: Status::InternalServerError,
-            content: GetRepoFileError::InvalidUTF8.get_err_content(),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        },
+        None => return GetRepoFileError::InvalidUTF8.to_return(),
         Some(v) => v,
     };
     let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
@@ -59,12 +44,7 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
 
     let config = match get_repo_config(Cow::Borrowed(repo)).await {
         Ok(v) => v,
-        Err(e) => return Return{
-            status: e.get_status_code(),
-            content: e.get_err_content(),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        }
+        Err(e) => return e.to_return(),
     };
 
 
@@ -197,12 +177,7 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
                 ErrorKind::FileTooLarge => GetRepoFileError::PutFileTooLarge{ limit },
                 _ => GetRepoFileError::FileWriteFailed,
             };
-            return Err(Return {
-                status: err.get_status_code(),
-                content: err.get_err_content(),
-                content_type: ContentType::Text,
-                header_map: None,
-            })
+            return Err(err.to_return())
         }
     }
     match file.shutdown().await {
