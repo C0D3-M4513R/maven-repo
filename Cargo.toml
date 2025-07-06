@@ -3,6 +3,7 @@ name = "maven-repo"
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/C0D3-M4513R/maven-repo"
+#rust-version = "1.89.0"
 
 [dependencies]
 dotenvy = "0.15.7"
@@ -20,8 +21,10 @@ tokio-util = { version = "0.7.15", features = ["compat"]}
 serde = "1.0.219"
 serde_json = "1.0.140"
 serde_derive = "1.0.219"
-#quick-xml = { version = "0.37.5" , features = ["serde"]}
+quick-xml = { version = "0.38.0" , features = ["serialize"]}
 base64 = "0.22.1"
+chrono = "0.4.41"
+memmap2 = "0.9.5"
 
 scc = "2.3.4"
 
@@ -31,6 +34,7 @@ digest = "0.10.7"
 md-5 = "0.10.6"
 sha1-checked = "0.10.0"
 sha2 = "0.10.9"
+sha3 = "0.10.8"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }

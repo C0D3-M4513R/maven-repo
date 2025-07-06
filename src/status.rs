@@ -15,7 +15,7 @@ pub struct Return {
 
 #[derive(Debug)]
 pub enum Content {
-    File(tokio::fs::File),
+    Mmap(memmap2::Mmap),
     Response(reqwest::Response),
     Str(&'static str),
     String(String),
@@ -23,7 +23,7 @@ pub enum Content {
 impl Content {
     fn fill_response(self, response: &mut rocket::response::Builder) {
         match self {
-            Content::File(file) => response.sized_body(None, file),
+            Content::Mmap(map) => response.sized_body(None, Cursor::new(map)),
             Content::Response(upstream_response) => response.streamed_body(upstream_response.bytes_stream().map_err(std::io::Error::other).into_async_read().compat()),
             Content::Str(data) => response.sized_body(Some(data.len()), Cursor::new(data)),
             Content::String(data) => response.sized_body(Some(data.len()), Cursor::new(data)),

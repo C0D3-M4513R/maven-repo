@@ -12,7 +12,7 @@ pub enum GetRepoFileError{
 
     NotFound,
 
-    ReadFile,
+    OpenFile,
     ReadDirectory,
     ReadDirectoryEntry,
     ReadDirectoryEntryNonUTF8Name,
@@ -32,10 +32,8 @@ pub enum GetRepoFileError{
     FileWriteFailed,
     FileFlushFailed,
     FileSeekFailed,
+    FileLockFailed,
     FileContainsNoDot,
-
-    Unauthorized,
-    Forbidden,
 }
 impl GetRepoFileError {
     pub fn get_err_content(self) -> Content {
@@ -50,7 +48,7 @@ impl GetRepoFileError {
             Self::ReadConfig => "Error reading repo config".into(),
             Self::ParseConfig => "Error parsing repo config".into(),
             Self::NotFound => "File or Directory could not be found".into(),
-            Self::ReadFile => "Error whilst reading file".into(),
+            Self::OpenFile => "Error whilst opening file".into(),
             Self::ReadDirectory => "Error whist reading directory".into(),
             Self::ReadDirectoryEntry => "Error whist reading directory entries".into(),
             Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names".into(),
@@ -60,15 +58,14 @@ impl GetRepoFileError {
             Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream".into(),
             Self::UpstreamBodyReadError => "Error: Failed to read the response of the Upstream".into(),
             Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into".into(),
-            Self::FileWriteFailed => "Error: Failed to write to a local file to contain the upstream's response".into(),
+            Self::FileWriteFailed => "Error: Failed to write to a local file".into(),
             Self::FileFlushFailed => "Error: Failed to flush a local file".into(),
             Self::FileSeekFailed => "Error: Failed to seek a local file".into(),
+            Self::FileLockFailed => "Error: Failed to lock a local file".into(),
             Self::UpstreamStatus(status) => format!("Upstream repo responded with a non 200 status code: {status}").into(),
             Self::UpstreamFileTooLarge{limit} => format!("The file is too Large. Max File size in bytes is: {limit}").into(),
             Self::PutFileTooLarge{limit} => format!("The file is too Large. Max File size in bytes is: {limit}").into(),
             Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which contain a '.' in them".into(),
-            Self::Unauthorized => "Unauthorized".into(),
-            Self::Forbidden => "Forbidden".into(),
         }
     }
     
@@ -81,7 +78,7 @@ impl GetRepoFileError {
             Self::ReadConfig => HashSet::from([Status::InternalServerError]),
             Self::ParseConfig => HashSet::from([Status::InternalServerError]),
             Self::NotFound => HashSet::from([Status::NotFound, Status::InternalServerError]),
-            Self::ReadFile => HashSet::from([Status::InternalServerError]),
+            Self::OpenFile => HashSet::from([Status::InternalServerError]),
             Self::ReadDirectory => HashSet::from([Status::InternalServerError]),
             Self::ReadDirectoryEntry => HashSet::from([Status::InternalServerError]),
             Self::ReadDirectoryEntryNonUTF8Name => HashSet::from([Status::BadRequest, Status::InternalServerError]),
@@ -94,12 +91,11 @@ impl GetRepoFileError {
             Self::FileWriteFailed => HashSet::from([Status::InternalServerError]),
             Self::FileFlushFailed => HashSet::from([Status::InternalServerError]),
             Self::FileSeekFailed => HashSet::from([Status::InternalServerError]),
+            Self::FileLockFailed => HashSet::from([Status::InternalServerError]),
             Self::UpstreamStatus(_) => HashSet::from([Status::InternalServerError]),
             Self::UpstreamFileTooLarge{limit: _} => HashSet::from([Status::InsufficientStorage, Status::InternalServerError]),
             Self::PutFileTooLarge{limit: _} => HashSet::from([Status::PayloadTooLarge, Status::InternalServerError]),
             Self::FileContainsNoDot => HashSet::from([Status::BadRequest, Status::NotFound, Status::InternalServerError]),
-            Self::Unauthorized => HashSet::from([Status::NotFound, Status::InternalServerError]),
-            Self::Forbidden => HashSet::from([Status::Forbidden, Status::NotFound, Status::InternalServerError]),
         }
     }
 }

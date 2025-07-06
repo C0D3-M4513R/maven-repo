@@ -193,9 +193,13 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
         Err(err) => {
             tracing::error!("Failed to write to file {}: {err}", file_path.display());
             remove_files(&files).await;
+            let err = match err.kind() {
+                ErrorKind::FileTooLarge => GetRepoFileError::PutFileTooLarge{ limit },
+                _ => GetRepoFileError::FileWriteFailed,
+            };
             return Err(Return {
-                status: Status::InternalServerError,
-                content: Content::Str("Failed writing to file"),
+                status: err.get_status_code(),
+                content: err.get_err_content(),
                 content_type: ContentType::Text,
                 header_map: None,
             })

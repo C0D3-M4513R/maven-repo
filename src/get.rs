@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::io::{ErrorKind, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
+use base64::Engine;
 use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -183,7 +184,7 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
     Err(errors)
 }
 enum StoredRepoPath{
-    File(tokio::fs::File),
+    Mmap((memmap2::Mmap, digest::Output<sha3::Sha3_512>)),
     Upstream(reqwest::Response),
     DirListing(HashSet<String>),
 }
@@ -211,11 +212,17 @@ impl StoredRepoPath {
                 content_type: ContentType::Binary,
                 header_map: Default::default(),
             },
-            Self::File(v) => Return{
-                status: Status::Ok,
-                content: Content::File(v),
-                content_type: ContentType::Binary,
-                header_map: Default::default(),
+            Self::Mmap((map, hash)) => {
+                let mut header_map = rocket::http::HeaderMap::new();
+                let hash = base64::engine::general_purpose::STANDARD.encode(hash);
+                header_map.add(rocket::http::Header::new("ETag", hash));
+
+                Return{
+                    status: Status::Ok,
+                    content: Content::Mmap(map),
+                    content_type: ContentType::Binary,
+                    header_map: Some(header_map),
+                }
             }
         }
     }
@@ -249,19 +256,28 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 tracing::error!("Error creating directories to {}: {err}", path.display());
             }
         }
-
-        let file = match tokio::fs::File::create_new(&path)
-                .await
-        {
-            Ok(v) => v,
-            Err(v) => {
+        let (path, file) = match tokio::task::spawn_blocking(move ||{
+            let file = std::fs::File::create_new(&path)?;
+            file.lock()?;
+            Ok::<_, std::io::Error>((path, file))
+        }).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(v)) => {
                 tracing::error!("Error Creating File: {v}");
+                return Err(vec![GetRepoFileError::FileCreateFailed]);
+            },
+            Err(v) => {
+                tracing::error!("Panicked Creating File: {v}");
                 return Err(vec![GetRepoFileError::FileCreateFailed]);
             }
         };
+        let file = tokio::fs::File::from_std(file);
+
         let mut response = response;
         let mut file = tokio::io::BufWriter::new(file);
+        let mut hash = sha3::Sha3_512::default();
         let mut current_size = 0u64;
+        use digest::Digest;
         loop {
             let body = match response.chunk().await {
                 Err(err) => {
@@ -275,6 +291,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             if current_size >= limit {
                 return Err(vec![GetRepoFileError::UpstreamFileTooLarge { limit}])
             }
+            hash.update(&*body);
 
             match file.write_all(&*body).await {
                 Ok(()) => {},
@@ -308,11 +325,28 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             Ok(_) => {},
             Err(err) => {
                 tracing::error!("Error seeking File {}: {err}", path.display());
-                return Err(vec![GetRepoFileError::FileFlushFailed]);
+                return Err(vec![GetRepoFileError::FileSeekFailed]);
             }
         }
-        
-        Ok(StoredRepoPath::File(file))
+        let file = file.into_std().await;
+        let map = match tokio::task::spawn_blocking(move ||{
+            file.unlock()?;
+            file.lock_shared()?;
+            let map = unsafe { memmap2::Mmap::map(&file)}?;
+            map.advise(memmap2::Advice::Sequential)?;
+            Ok::<_, std::io::Error>(map)
+        }).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(v)) => {
+                tracing::error!("Error relocking(exclusive->shared) File: {v}");
+                return Err(vec![GetRepoFileError::FileLockFailed]);
+            },
+            Err(v) => {
+                tracing::error!("Panicked relocking(exclusive->shared) File: {v}");
+                return Err(vec![GetRepoFileError::FileLockFailed]);
+            }
+        };
+        Ok(StoredRepoPath::Mmap((map, hash.finalize())))
     } else {
         Ok(StoredRepoPath::Upstream(response))
     }
@@ -320,11 +354,11 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
 async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut errors = Vec::new();
     macro_rules! delegate {
-        () => {
+        ($path:ident) => {
             if !display_dir {
                 errors.push(GetRepoFileError::NotFound);
             } else {
-                match serve_repository_stored_dir(&path).await {
+                match serve_repository_stored_dir(&$path).await {
                     Ok(v) => return Ok(v),
                     Err(mut err) => errors.append(&mut err),
                 }
@@ -333,38 +367,66 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
         }
     }
     macro_rules! handle_err {
-        ($err:ident) => {
+        ($err:ident, $path:ident) => {
             match $err.kind(){
                 ErrorKind::IsADirectory if display_dir => {
-                    delegate!();
+                    delegate!($path);
                 }
                 ErrorKind::NotFound => errors.push(GetRepoFileError::NotFound),
                 _ => {
-                    tracing::warn!("Error reading file: {}", $err);
-                    errors.push(GetRepoFileError::ReadFile)
+                    tracing::warn!("Error opening file: {}", $err);
+                    errors.push(GetRepoFileError::OpenFile)
                 },
             }
             return Err(errors);
         };
     }
-    let file = match tokio::fs::File::open(&path).await {
-        Ok(v) => v,
-        Err(err) => {
-            handle_err!(err);
-        }
-    };
-    match file.metadata().await {
+    match tokio::fs::metadata(&path).await {
         Ok(v) => {
             //We only check, if the metadata says, that this is a dir, because non-files might also be able to be read (e.g. unix sockets).
             //Theoretically everything inside the maven repos should be a directory or file.
             if v.is_dir() {
-                delegate!();
+                delegate!(path);
             }
             
-            Ok(StoredRepoPath::File(file))
+            
+            let map = match tokio::task::spawn_blocking(move ||{
+                let file = match std::fs::File::open(&path) {
+                    Ok(v) => v,
+                    Err(v) => return (Err(v), path),
+                };
+                match file.lock_shared() {
+                    Ok(()) => {},
+                    Err(v) => return (Err(v), path),
+                };
+                let map = match unsafe { memmap2::Mmap::map(&file) }  {
+                    Ok(v) => v,
+                    Err(v) => return (Err(v), path),
+                };
+                match map.advise(memmap2::Advice::Sequential)  {
+                    Ok(()) => {},
+                    Err(v) => return (Err(v), path),
+                };
+
+                use digest::Digest;
+                let hash = sha3::Sha3_512::default().chain_update(&*map).finalize();
+                (Ok::<_, std::io::Error>((map, hash)), path)
+            }).await {
+                Ok((Ok(v), _)) => v,
+                Ok((Err(err), path)) => {
+                    handle_err!(err, path);
+                }
+                Err(err) => {
+                    tracing::error!("Panicked whilst opening file: {}", err);
+                    errors.push(GetRepoFileError::OpenFile);
+                    return Err(errors);
+                }
+            };
+            
+            Ok(StoredRepoPath::Mmap(map))
         },
         Err(err) => {
-            handle_err!(err);
+            handle_err!(err, path);
         }
     }
 }
