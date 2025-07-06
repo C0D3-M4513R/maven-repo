@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 #[derive(Debug, serde_derive::Deserialize, serde_derive::Serialize)]
 pub struct MavenMetadata {
     pub group_id: String,
@@ -9,46 +11,39 @@ pub struct MavenMetadata {
 pub struct Versioning {
     pub latest: String,
     pub release: String,
-    #[serde(flatten)]
-    pub inner_versioning: InnerVersioning,
-    pub last_updated: u64, 
-}
-#[derive(Debug, serde_derive::Deserialize, serde_derive::Serialize)]
-#[serde(untagged)]
-pub enum InnerVersioning {
-    Versions{
-        versions: Versions
-    },
-    Snapshot{
-        snapshot: Snapshot,
-        #[serde(default)]
-        snapshot_versions: Vec<SnapshotVersions>
-    }
+    #[serde(default)]
+    pub versions: Option<Versions>,
+    #[serde(default)]
+    pub snapshot: Option<Snapshot>,
+    #[serde(default)]
+    pub snapshot_versions: Option<SnapshotVersions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated: Option<String>, 
 }
 
-#[derive(Debug, serde_derive::Deserialize, serde_derive::Serialize)]
+#[derive(Debug, Clone, Default, serde_derive::Deserialize, serde_derive::Serialize)]
 pub struct Versions {
     #[serde(default)]
-    pub version: Vec<String>,
+    pub version: HashSet<String>,
 }
-#[derive(Debug, serde_derive::Deserialize, serde_derive::Serialize)]
+#[derive(Debug, Clone, serde_derive::Deserialize, serde_derive::Serialize, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[serde(rename_all="camelCase")]
 pub struct Snapshot {
     pub timestamp: String,
     pub build_number: u64,
 }
-#[derive(Debug, serde_derive::Deserialize, serde_derive::Serialize)]
+#[derive(Debug, Clone, Default, serde_derive::Deserialize, serde_derive::Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct SnapshotVersions {
     #[serde(default)]
-    pub snapshot_version: Vec<SnapshotVersion>,
+    pub snapshot_version: HashSet<SnapshotVersion>,
 }
-#[derive(Debug, serde_derive::Deserialize, serde_derive::Serialize)]
+#[derive(Debug, Clone, serde_derive::Deserialize, serde_derive::Serialize, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[serde(rename_all="camelCase")]
 pub struct SnapshotVersion {
+    pub value: String,
+    pub extension: Option<String>,
     #[serde(default)]
     pub classifier: Option<String>,
-    pub extension: String,
-    pub value: String,
-    pub updated: u64,
+    pub updated: String,
 }
