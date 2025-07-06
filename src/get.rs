@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{ErrorKind, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use base64::Engine;
 use reqwest::StatusCode;
@@ -21,21 +21,18 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Some(Ok(v)) => Some(v),
         None => None,
     };
-    if path.iter().any(|v|v == "..") {
-        return Return{
-            status: Status::BadRequest,
-            content: Content::Str("`..` is not allowed in the path"),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
+    if path.components().any(|v|
+        match v {
+            Component::ParentDir => true,
+            Component::RootDir => true,
+            Component::Prefix(_) => true,
+            _ => false,
         }
+    ) {
+        return GetRepoFileError::BadRequestPath.to_return();
     }
     if path.has_root() {
-        return Return{
-            status: Status::BadRequest,
-            content: Content::Str("An absolute path is not allowed"),
-            content_type: ContentType::Text,
-            header_map: Default::default(),
-        }
+        return GetRepoFileError::BadRequestPath.to_return();
     }
     let str_path = match path.to_str() {
         None => return GetRepoFileError::InvalidUTF8.to_return(),
