@@ -235,7 +235,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         StatusCode::NOT_FOUND => return Err(vec![GetRepoFileError::NotFound]),
         code => {
             tracing::warn!("Error contacting Upstream repo didn't respond with Ok: {code}");
-            return Err(vec![GetRepoFileError::UpstreamStatus(code)]);
+            return Err(vec![GetRepoFileError::UpstreamStatus]);
         }
     }
 
@@ -279,7 +279,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
             };
             current_size += body.len() as u64;
             if current_size >= limit {
-                return Err(vec![GetRepoFileError::UpstreamFileTooLarge { limit}])
+                return Err(vec![GetRepoFileError::UpstreamFileTooLarge])
             }
             hash.update(&*body);
 

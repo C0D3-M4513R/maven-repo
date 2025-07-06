@@ -1,6 +1,4 @@
-use std::borrow::Cow;
 use std::collections::HashSet;
-use reqwest::StatusCode;
 use rocket::http::{ContentType, Status};
 use crate::status::{Content, Return};
 
@@ -24,9 +22,9 @@ pub enum GetRepoFileError{
 
     UpstreamRequestError,
     UpstreamBodyReadError,
-    UpstreamStatus(StatusCode),
-    UpstreamFileTooLarge{limit: u64,},
-    PutFileTooLarge{limit: u64,},
+    UpstreamStatus,
+    UpstreamFileTooLarge,
+    PutFileTooLarge,
 
     FileCreateFailed,
     FileWriteFailed,
@@ -36,7 +34,7 @@ pub enum GetRepoFileError{
     FileContainsNoDot,
 }
 impl GetRepoFileError {
-    pub fn to_return(self) -> Return {
+    pub const fn to_return(self) -> Return {
         Return {
             status: self.get_status_code(),
             content: self.get_err_content(),
@@ -44,36 +42,33 @@ impl GetRepoFileError {
             header_map: None,
         }
     }
-    pub fn get_err_content(self) -> Content {
-        match self.get_err(){
-            Cow::Borrowed(v) => Content::Str(v),
-            Cow::Owned(v) => Content::String(v),
-        }
+    pub const fn get_err_content(self) -> Content {
+        Content::Str(self.get_err())
     }
-    pub fn get_err(self) -> Cow<'static,str> {
+    pub const fn get_err(self) -> &'static str {
         match self {
-            Self::OpenConfig => "Error opening repo config file".into(),
-            Self::ReadConfig => "Error reading repo config".into(),
-            Self::ParseConfig => "Error parsing repo config".into(),
-            Self::NotFound => "File or Directory could not be found".into(),
-            Self::OpenFile => "Error whilst opening file".into(),
-            Self::ReadDirectory => "Error whist reading directory".into(),
-            Self::ReadDirectoryEntry => "Error whist reading directory entries".into(),
-            Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names".into(),
-            Self::Panicked => "Error: implementation panicked".into(),
-            Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters".into(),
-            Self::BadRequestPath => "Error: Request Path failed sanity checks".into(),
-            Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream".into(),
-            Self::UpstreamBodyReadError => "Error: Failed to read the response of the Upstream".into(),
-            Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into".into(),
-            Self::FileWriteFailed => "Error: Failed to write to a local file".into(),
-            Self::FileFlushFailed => "Error: Failed to flush a local file".into(),
-            Self::FileSeekFailed => "Error: Failed to seek a local file".into(),
-            Self::FileLockFailed => "Error: Failed to lock a local file".into(),
-            Self::UpstreamStatus(status) => format!("Upstream repo responded with a non 200 status code: {status}").into(),
-            Self::UpstreamFileTooLarge{limit} => format!("The file is too Large. Max File size in bytes is: {limit}").into(),
-            Self::PutFileTooLarge{limit} => format!("The file is too Large. Max File size in bytes is: {limit}").into(),
-            Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which contain a '.' in them".into(),
+            Self::OpenConfig => "Error opening repo config file",
+            Self::ReadConfig => "Error reading repo config",
+            Self::ParseConfig => "Error parsing repo config",
+            Self::NotFound => "File or Directory could not be found",
+            Self::OpenFile => "Error whilst opening file",
+            Self::ReadDirectory => "Error whist reading directory",
+            Self::ReadDirectoryEntry => "Error whist reading directory entries",
+            Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names",
+            Self::Panicked => "Error: implementation panicked",
+            Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters",
+            Self::BadRequestPath => "Error: Request Path failed sanity checks",
+            Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream",
+            Self::UpstreamBodyReadError => "Error: Failed to read the response of the Upstream",
+            Self::FileCreateFailed => "Error: Failed to create a file to write the upstream's response into",
+            Self::FileWriteFailed => "Error: Failed to write to a local file",
+            Self::FileFlushFailed => "Error: Failed to flush a local file",
+            Self::FileSeekFailed => "Error: Failed to seek a local file",
+            Self::FileLockFailed => "Error: Failed to lock a local file",
+            Self::UpstreamStatus => "Upstream repo responded with a non 200 status code",
+            Self::UpstreamFileTooLarge => "The file from the remote is too Large.",
+            Self::PutFileTooLarge => "The file is too Large.",
+            Self::FileContainsNoDot => "Error: Refusing to contact upstream about files, which contain a '.' in them",
         }
     }
 
@@ -107,9 +102,9 @@ impl GetRepoFileError {
             Self::FileFlushFailed =>                &[Status::InternalServerError],
             Self::FileSeekFailed =>                 &[Status::InternalServerError],
             Self::FileLockFailed =>                 &[Status::InternalServerError],
-            Self::UpstreamStatus(_) =>              &[Status::InternalServerError],
-            Self::UpstreamFileTooLarge{limit: _} => &[Status::InsufficientStorage, Status::InternalServerError],
-            Self::PutFileTooLarge{limit: _} =>      &[Status::PayloadTooLarge, Status::InternalServerError],
+            Self::UpstreamStatus =>                 &[Status::InternalServerError],
+            Self::UpstreamFileTooLarge =>           &[Status::InsufficientStorage, Status::InternalServerError],
+            Self::PutFileTooLarge =>                &[Status::PayloadTooLarge, Status::InternalServerError],
             Self::FileContainsNoDot =>              &[Status::BadRequest, Status::NotFound, Status::InternalServerError],
         }
     }
