@@ -202,7 +202,11 @@ impl<'a> PathInfo<'a> {
             let file = file.into_std().await;
             //This potentially waits for any other tasks to 
             let file = match tokio::task::spawn_blocking(||{
+                #[cfg(feature = "locking")]
                 let lock = file.lock();
+                #[cfg(not(feature = "locking"))]
+                let lock = Ok::<_, std::io::Error>(());
+
                 (file, lock)
             }).await {
                 Ok((file, Ok(()))) => {

@@ -407,6 +407,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         }
         let (path, file) = match tokio::task::spawn_blocking(move ||{
             let file = std::fs::File::create_new(&path)?;
+            #[cfg(feature = "locking")]
             file.lock()?;
             Ok::<_, std::io::Error>((path, file))
         }).await {
@@ -479,7 +480,9 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         }
         let file = file.into_std().await;
         let (metadata, map) = match tokio::task::spawn_blocking(move ||{
+            #[cfg(feature = "locking")]
             file.unlock()?;
+            #[cfg(feature = "locking")]
             file.lock_shared()?;
             let metadata = file.metadata()?;
             let map = unsafe { memmap2::Mmap::map(&file)}?;
@@ -545,6 +548,7 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                     Ok(v) => v,
                     Err(v) => return (Err(v), path),
                 };
+                #[cfg(feature = "locking")]
                 match file.lock_shared() {
                     Ok(()) => {},
                     Err(v) => return (Err(v), path),

@@ -256,9 +256,13 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
     write_file_hash!(sha1, "sha1");
     write_file_hash!(sha2_256, "sha256");
     write_file_hash!(sha2_512, "sha512");
+    #[cfg(feature = "locking")]
     let file = file.file.into_inner().into_std().await;
     match tokio::task::spawn_blocking(move ||{
-        file.unlock()
+        #[cfg(feature = "locking")]
+        {file.unlock()}
+        #[cfg(not(feature = "locking"))]
+        {Ok::<_, std::io::Error>(())}
     }).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {

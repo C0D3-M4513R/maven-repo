@@ -37,7 +37,10 @@ sha3 = "0.10.8"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
-
 [profile.release]
 lto = true
 strip = true
+
+[features]
+default = ["locking"]
+locking = []
