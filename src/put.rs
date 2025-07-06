@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use digest::Digest;
-use rocket::data::ToByteUnit;
+use rocket::data::{ByteUnit, ToByteUnit};
 use rocket::http::{ContentType, Status};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -101,7 +101,7 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         }
     };
     let max_file_size = config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE);
-    match put_file(file, path.clone(), max_file_size, data.open(4.gibibytes())).await {
+    match put_file(file, path.clone(), max_file_size, data.open(ByteUnit::max_value())).await {
         Ok(_) => {},
         Err(err) => return err,
     };
