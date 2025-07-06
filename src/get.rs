@@ -72,7 +72,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 out.push('\n');
             }
             return Return{
-                status: status_code.map(|codes|codes.into_iter().next()).unwrap_or(None).unwrap_or(Status::InternalServerError),
+                status: status_code.map(|codes|codes.into_iter().min()).unwrap_or(None).unwrap_or(Status::InternalServerError),
                 content: Content::String(out),
                 content_type: ContentType::Text,
                 header_map: Default::default(),
