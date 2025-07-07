@@ -18,6 +18,9 @@ use crate::RequestHeaders;
 
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>) -> Return {
+    let mut start = Instant::now();
+    let mut next;
+
     let auth = match auth {
         Some(Err(err)) => return err,
         Some(Ok(v)) => Some(v),
@@ -43,15 +46,25 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
     let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
+    next = Instant::now();
+    tracing::info!("get_repo_file: {repo}: path checks took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
+
     let config = match get_repo_config(Cow::Borrowed(repo)).await {
         Ok(v) => v,
         Err(e) => return e.to_return(),
     };
+    next = Instant::now();
+    tracing::info!("get_repo_file: {repo}: get_repo_config took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
 
     match config.check_auth(rocket::http::Method::Get, auth, str_path) {
         Err(err) => return err,
         Ok(_) => {},
     }
+    next = Instant::now();
+    tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
 
     let (metadata, map, hash) = match get_repo_file_impl(repo, path.as_path(), str_path, config).await {
         Ok(StoredRepoPath::Mmap(v)) => v,
@@ -80,6 +93,10 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         }
     };
 
+    next = Instant::now();
+    tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
+
     let mut status = Status::Ok;
     let mut content = Content::Mmap(map);
     let content_type = ContentType::Binary;
@@ -101,11 +118,17 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 break
             },
             Some(ETagValidator::Tags(v)) => v,
-            None => return Return {
-                status: Status::BadRequest,
-                content: Content::String(format!("Bad If-None-Match header: {i}")),
-                content_type: ContentType::Text,
-                header_map: None,
+            None => {
+                next = Instant::now();
+                tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+                core::mem::swap(&mut start, &mut next);
+
+                return Return {
+                    status: Status::BadRequest,
+                    content: Content::String(format!("Bad If-None-Match header: {i}")),
+                    content_type: ContentType::Text,
+                    header_map: None,
+                }
             }
         };
         //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
@@ -180,6 +203,11 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                         if http_time > modification_datetime {
                             content = Content::None;
                             status = Status::NotModified;
+
+                            next = Instant::now();
+                            tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+                            core::mem::swap(&mut start, &mut next);
+
                             return Return{
                                 status,
                                 content,
@@ -189,6 +217,10 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                         }
                     },
                     Err(err) => {
+                        next = Instant::now();
+                        tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+                        core::mem::swap(&mut start, &mut next);
+
                         return Return{
                             status: Status::BadRequest,
                             content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
@@ -205,6 +237,11 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                     if http_time <= modification_datetime {
                         content = Content::None;
                         status = Status::PreconditionFailed;
+
+                        next = Instant::now();
+                        tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+                        core::mem::swap(&mut start, &mut next);
+
                         return Return{
                             status,
                             content,
@@ -214,6 +251,10 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                     }
                 },
                 Err(err) => {
+                    next = Instant::now();
+                    tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+                    core::mem::swap(&mut start, &mut next);
+
                     return Return{
                         status: Status::BadRequest,
                         content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
@@ -224,6 +265,9 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             }
         }
     }
+    next = Instant::now();
+    tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
 
 
     Return {
@@ -239,7 +283,7 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
 
     let (configs, mut errors) = get_repo_look_locations(repo, &config).await;
     next = Instant::now();
-    tracing::info!("{repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
+    tracing::info!("get_repo_file_impl: {repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let mut js = JoinSet::new();
@@ -282,13 +326,13 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
 
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        tracing::info!("{repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
+        tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
 
     next = Instant::now();
-    tracing::info!("{repo}: local resolve took took {}µs", (next-start).as_micros());
+    tracing::info!("get_repo_file_impl: {repo}: local resolve took took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
     if path.components().any(|v|match v {
         Component::Normal(v) => {
@@ -322,12 +366,12 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
     //Collect requests from upstreams
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        tracing::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
+        tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
     next = Instant::now();
-    tracing::info!("{repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
+    tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     Err(errors)
