@@ -119,10 +119,11 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     timings.append(&mut timing);
 
     let mut status = Status::Ok;
-    let mut content = Content::Mmap(map);
+    let old_hash = tokio::sync::OnceCell::new();
+    let mut content = None;
     let content_type = ContentType::Binary;
     let mut header_map = rocket::http::HeaderMap::new();
-    header_map.add(rocket::http::Header::new("ETag", format!(r#""{}""#,base64::engine::general_purpose::STANDARD.encode(&*hash))));
+    header_map.add(rocket::http::Header::new("ETag", format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()))));
     if let Ok(modification_datetime) = metadata.modified() {
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
         header_map.add(rocket::http::Header::new("Last-Modified", modification_datetime.to_rfc2822()));
@@ -134,14 +135,14 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         contains_none_match = true;
         let v = match ETagValidator::parse(i) {
             Some(ETagValidator::Any) => {
-                content = Content::None;
+                content = Some(Content::None);
                 status = Status::NotModified;
                 break
             },
             Some(ETagValidator::Tags(v)) => v,
             None => {
                 next = Instant::now();
-                timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                 core::mem::swap(&mut start, &mut next);
 
@@ -159,12 +160,10 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
         // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
         for tag in v {
-            if let Ok(v) = base64::engine::general_purpose::STANDARD.decode(&tag.tag) {
-                if v.len() == hash.len() && v == &*hash {
-                    content = Content::None;
-                    status = Status::NotModified;
-                    break
-                }
+            if tag.matches(&map, &hash, &old_hash, &mut timings).await.unwrap_or(false) {
+                content = Some(Content::None);
+                status = Status::NotModified;
+                break
             }
         }
     }
@@ -180,7 +179,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 Some(ETagValidator::Tags(v)) => v,
                 None => {
                     next = Instant::now();
-                    timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                    timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                     core::mem::swap(&mut start, &mut next);
 
@@ -198,11 +197,9 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
             // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
             for tag in v {
-                if let Ok(v) = base64::engine::general_purpose::STANDARD.decode(&tag.tag) {
-                    if v.len() == hash.len() && v == &*hash {
-                        any_match = true;
-                        break
-                    }
+                if tag.matches(&map, &hash, &old_hash, &mut timings).await.unwrap_or(false) {
+                    any_match = true;
+                    break
                 }
             }
         }
@@ -239,11 +236,10 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 match chrono::DateTime::parse_from_rfc2822(i) {
                     Ok(http_time) => {
                         if http_time > modification_datetime {
-                            content = Content::None;
                             status = Status::NotModified;
 
                             next = Instant::now();
-                            timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                            timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                             core::mem::swap(&mut start, &mut next);
 
@@ -251,7 +247,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
 
                             return Return{
                                 status,
-                                content,
+                                content: Content::None,
                                 content_type,
                                 header_map: Some(header_map),
                             };
@@ -259,7 +255,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                     },
                     Err(err) => {
                         next = Instant::now();
-                        timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                        timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                         core::mem::swap(&mut start, &mut next);
 
@@ -280,18 +276,17 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             match chrono::DateTime::parse_from_rfc2822(i) {
                 Ok(http_time) => {
                     if http_time <= modification_datetime {
-                        content = Content::None;
                         status = Status::PreconditionFailed;
 
                         next = Instant::now();
-                        timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                        timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                         core::mem::swap(&mut start, &mut next);
                         header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
                         return Return{
                             status,
-                            content,
+                            content: Content::None,
                             content_type,
                             header_map: Some(header_map),
                         };
@@ -299,7 +294,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 },
                 Err(err) => {
                     next = Instant::now();
-                    timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                    timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                     core::mem::swap(&mut start, &mut next);
                     header_map.remove_all();
@@ -317,11 +312,12 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         }
     }
     next = Instant::now();
-    timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+    timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+    let content = content.unwrap_or(Content::Mmap(map));
 
     Return {
         status,
@@ -438,7 +434,7 @@ enum StoredRepoPath{
     Mmap{
         metadata: std::fs::Metadata,
         data: memmap2::Mmap,
-        hash: digest::Output<sha3::Sha3_512>,
+        hash: blake3::Hash,
         timing: Vec<String>,
     },
     Upstream(reqwest::Response),
@@ -470,7 +466,7 @@ impl StoredRepoPath {
             },
             Self::Mmap{data, hash, ..} => {
                 let mut header_map = rocket::http::HeaderMap::new();
-                let hash = base64::engine::general_purpose::STANDARD.encode(hash);
+                let hash = base64::engine::general_purpose::STANDARD.encode(hash.as_bytes());
                 header_map.add(rocket::http::Header::new("ETag", hash));
 
                 Return{
@@ -558,9 +554,8 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
 
         let mut response = response;
         let mut file = tokio::io::BufWriter::new(file);
-        let mut hash = sha3::Sha3_512::default();
+        let mut hash = blake3::Hasher::default();
         let mut current_size = 0u64;
-        use digest::Digest;
 
         let mut next = Instant::now();
         timings.push(format!(r#"resolveImplRemoteBeforeBodyRead;dur={};desc="Resolve Impl: Remote: Task Scheduling Delay""#, (next-start).as_server_timing_duration()));
@@ -594,6 +589,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 }
             }
         }
+        let hash = hash.finalize();
         match file.shutdown().await  {
             Ok(()) => {},
             Err(err) => {
@@ -647,7 +643,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         Ok(StoredRepoPath::Mmap{
             metadata,
             data: map,
-            hash: hash.finalize(),
+            hash,
             timing: timings
         })
     } else {
@@ -738,12 +734,19 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                     Ok(()) => {},
                     Err(v) => return (Err(v), path),
                 };
+                #[cfg(target_os = "linux")]
+                {
+                    match map.advise(memmap2::Advice::PopulateRead)  {
+                        Ok(()) => {},
+                        Err(v) => return (Err(v), path),
+                    };
+
+                }
                 next = Instant::now();
                 timings.push(format!(r#"resolveImplLocalMemMapFile;dur={};desc="Resolve Impl: Local: Memory Map file""#, (next-start).as_server_timing_duration()));
                 core::mem::swap(&mut start, &mut next);
 
-                use digest::Digest;
-                let hash = sha3::Sha3_512::default().chain_update(&*map).finalize();
+                let hash = blake3::Hasher::default().update(&*map).finalize();
                 next = Instant::now();
                 timings.push(format!(r#"resolveImplLocalETagFile;dur={};desc="Resolve Impl: Local: Calculate File ETag""#, (next-start).as_server_timing_duration()));
                 core::mem::swap(&mut start, &mut next);
