@@ -1,3 +1,4 @@
+use std::time::Instant;
 use base64::Engine;
 use rocket::http::Status;
 use rocket::Request;
@@ -8,6 +9,7 @@ use crate::status::{Content, Return};
 pub struct BasicAuthentication {
     pub username: String,
     pub password: String,
+    pub duration: std::time::Duration,
 }
 
 #[rocket::async_trait]
@@ -15,6 +17,7 @@ impl<'r> FromRequest<'r> for BasicAuthentication {
     type Error = Return;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Return> {
+        let start = Instant::now();
         let request = match request.headers().get("Authorization").next() {
             None => return Outcome::Forward(Status::Forbidden),
             Some(v) => v,
@@ -70,6 +73,7 @@ impl<'r> FromRequest<'r> for BasicAuthentication {
         Outcome::Success(Self{
             username,
             password,
+            duration: Instant::now() - start,
         })
     }
 }

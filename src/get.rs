@@ -15,15 +15,20 @@ use crate::status::{Content, Return};
 use crate::err::GetRepoFileError;
 use crate::etag::ETagValidator;
 use crate::RequestHeaders;
+use crate::server_timings::AsServerTimingDuration;
 
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>) -> Return {
+    let mut timings = Vec::new();
     let mut start = Instant::now();
     let mut next;
 
     let auth = match auth {
         Some(Err(err)) => return err,
-        Some(Ok(v)) => Some(v),
+        Some(Ok(v)) => {
+            timings.push(format!(r#"parseAuthenticationHeader;dur={};desc="Parseing HTTP Authentication Header""#, v.duration.as_server_timing_duration()));
+            Some(v)
+        },
         None => None,
     };
     if path.components().any(|v|
@@ -47,14 +52,20 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
     next = Instant::now();
+    timings.push(format!(r#"verifyPathValid;dur={};desc="Verify Path to not contain any malicious items""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: path checks took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let config = match get_repo_config(Cow::Borrowed(repo)).await {
         Ok(v) => v,
-        Err(e) => return e.to_return(),
+        Err(e) => {
+            let mut ret = e.to_return();
+            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            return ret;
+        },
     };
     next = Instant::now();
+    timings.push(format!(r#"getMainConfig;dur={};desc="Get Repo Config""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
@@ -63,12 +74,23 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(_) => {},
     }
     next = Instant::now();
+    timings.push(format!(r#"verifyAuth;dur={};desc="Verify Authentication Information""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let (metadata, map, hash) = match get_repo_file_impl(repo, path.as_path(), str_path, config).await {
-        Ok(StoredRepoPath::Mmap(v)) => v,
-        Ok(v) => return v.to_return(str_path.as_ref(), &repo),
+    let resolve_impl = get_repo_file_impl(repo, path.as_path(), str_path, config, &mut timings).await;
+    next = Instant::now();
+    timings.push(format!(r#"resolveImpl;dur={};desc="Total Resolve Implementation""#, (next-start).as_server_timing_duration()));
+    tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
+
+    let (metadata, map, hash, mut timing) = match resolve_impl {
+        Ok(StoredRepoPath::Mmap{metadata, data, hash, timing}) => (metadata, data, hash, timing),
+        Ok(v) => {
+            let mut ret = v.to_return(str_path.as_ref(), &repo);
+            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            return ret;
+        },
         Err(v) => {
             let mut out = String::new();
             if v.is_empty() {
@@ -84,18 +106,17 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 out.push_str(err.get_err().as_ref());
                 out.push('\n');
             }
-            return Return{
+            let mut ret = Return{
                 status: status_code.map(|codes|codes.into_iter().min()).unwrap_or(None).unwrap_or(Status::InternalServerError),
                 content: Content::String(out),
                 content_type: ContentType::Text,
                 header_map: Default::default(),
             };
+            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            return ret;
         }
     };
-
-    next = Instant::now();
-    tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
-    core::mem::swap(&mut start, &mut next);
+    timings.append(&mut timing);
 
     let mut status = Status::Ok;
     let mut content = Content::Mmap(map);
@@ -120,14 +141,18 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             Some(ETagValidator::Tags(v)) => v,
             None => {
                 next = Instant::now();
+                timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                 core::mem::swap(&mut start, &mut next);
+
+                header_map.remove_all();
+                header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
                 return Return {
                     status: Status::BadRequest,
                     content: Content::String(format!("Bad If-None-Match header: {i}")),
                     content_type: ContentType::Text,
-                    header_map: None,
+                    header_map: Some(header_map),
                 }
             }
         };
@@ -153,11 +178,21 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                     break;
                 },
                 Some(ETagValidator::Tags(v)) => v,
-                None => return Return {
-                    status: Status::BadRequest,
-                    content: Content::String(format!("Bad If-Match header: {i}")),
-                    content_type: ContentType::Text,
-                    header_map: None,
+                None => {
+                    next = Instant::now();
+                    timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
+                    tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
+                    core::mem::swap(&mut start, &mut next);
+
+                    header_map.remove_all();
+                    header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+
+                    return Return {
+                        status: Status::BadRequest,
+                        content: Content::String(format!("Bad If-Match header: {i}")),
+                        content_type: ContentType::Text,
+                        header_map: Some(header_map),
+                    }
                 }
             };
             //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
@@ -172,11 +207,14 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             }
         }
         if !any_match {
+            header_map.remove_all();
+            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+
             return Return{
                 status: Status::PreconditionFailed,
                 content: Content::None,
                 content_type: ContentType::Text,
-                header_map: None,
+                header_map: Some(header_map),
             }
         }
 
@@ -205,8 +243,11 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                             status = Status::NotModified;
 
                             next = Instant::now();
+                            timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                             core::mem::swap(&mut start, &mut next);
+
+                            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
                             return Return{
                                 status,
@@ -218,14 +259,18 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                     },
                     Err(err) => {
                         next = Instant::now();
+                        timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                         core::mem::swap(&mut start, &mut next);
+
+                        header_map.remove_all();
+                        header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
                         return Return{
                             status: Status::BadRequest,
                             content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
                             content_type: ContentType::Text,
-                            header_map: None,
+                            header_map: Some(header_map),
                         }
                     }
                 }
@@ -239,8 +284,10 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                         status = Status::PreconditionFailed;
 
                         next = Instant::now();
+                        timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                         core::mem::swap(&mut start, &mut next);
+                        header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
                         return Return{
                             status,
@@ -252,23 +299,29 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 },
                 Err(err) => {
                     next = Instant::now();
+                    timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
                     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
                     core::mem::swap(&mut start, &mut next);
+                    header_map.remove_all();
+                    header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+
 
                     return Return{
                         status: Status::BadRequest,
                         content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
                         content_type: ContentType::Text,
-                        header_map: None,
+                        header_map: Some(header_map),
                     }
                 }
             }
         }
     }
     next = Instant::now();
+    timings.push(format!(r#"condHeaderParse;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
+    header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
     Return {
         status,
@@ -277,12 +330,13 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         header_map: Some(header_map)
     }
 }
-async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository, timings: &mut Vec<String>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
     let (configs, mut errors) = get_repo_look_locations(repo, &config).await;
     next = Instant::now();
+    timings.push(format!(r#"resolveImplGetLocalRepoConfigs;dur={};desc="Resolve Implementation: Fetch all local upstream repo configs""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file_impl: {repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
@@ -326,12 +380,14 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
 
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
+        timings.push(format!(r#"resolveImplQueryLocalRepositoriesFound;dur={};desc="Resolve Implementation: Query local repositories for File (HIT)""#, (next-start).as_server_timing_duration()));
         tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
 
     next = Instant::now();
+    timings.push(format!(r#"resolveImplQueryLocalRepositoriesMiss;dur={};desc="Resolve Implementation: Query local repositories for File (MISS)""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file_impl: {repo}: local resolve took took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
     if path.components().any(|v|match v {
@@ -366,18 +422,25 @@ async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Rep
     //Collect requests from upstreams
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
+        timings.push(format!(r#"resolveImplQueryRemoteRepositoriesHit;dur={};desc="Resolve Implementation: Query remote repositories for File (HIT)""#, (next-start).as_server_timing_duration()));
         tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
     next = Instant::now();
+    timings.push(format!(r#"resolveImplQueryRemoteRepositoriesMiss;dur={};desc="Resolve Implementation: Query remote repositories for File (MISS)""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     Err(errors)
 }
 enum StoredRepoPath{
-    Mmap((std::fs::Metadata, memmap2::Mmap, digest::Output<sha3::Sha3_512>)),
+    Mmap{
+        metadata: std::fs::Metadata,
+        data: memmap2::Mmap,
+        hash: digest::Output<sha3::Sha3_512>,
+        timing: Vec<String>,
+    },
     Upstream(reqwest::Response),
     DirListing(HashSet<String>),
 }
@@ -396,23 +459,23 @@ impl StoredRepoPath {
                     status: Status::Ok,
                     content: Content::String(out),
                     content_type: ContentType::HTML,
-                    header_map: Default::default(),
+                    header_map: None,
                 }
             },
             Self::Upstream(v) => Return{
                 status: Status::Ok,
                 content: Content::Response(v),
                 content_type: ContentType::Binary,
-                header_map: Default::default(),
+                header_map: None,
             },
-            Self::Mmap((_, map, hash)) => {
+            Self::Mmap{data, hash, ..} => {
                 let mut header_map = rocket::http::HeaderMap::new();
                 let hash = base64::engine::general_purpose::STANDARD.encode(hash);
                 header_map.add(rocket::http::Header::new("ETag", hash));
 
                 Return{
                     status: Status::Ok,
-                    content: Content::Mmap(map),
+                    content: Content::Mmap(data),
                     content_type: ContentType::Binary,
                     header_map: Some(header_map),
                 }
@@ -421,6 +484,10 @@ impl StoredRepoPath {
     }
 }
 async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool, limit: u64) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+    let mut start = Instant::now();
+    let mut next;
+    let mut timings = Vec::new();
+
     let url = remote.url;
     let response = match crate::CLIENT
         .get(format!("{url}/{str_path}"))
@@ -433,6 +500,7 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         },
         Ok(v) => v,
     };
+
     match response.status() {
         StatusCode::OK => {},
         StatusCode::NOT_FOUND => return Err(vec![GetRepoFileError::NotFound]),
@@ -443,17 +511,38 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
     }
 
     if stores_remote_upstream {
+        next = Instant::now();
+        timings.push(format!(r#"resolveImplRemoteRequestHead;dur={};desc="Resolve Impl: Remote: Send Request to Remote and wait for Headers""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
+
         let path = Path::new(&repo).join(path);
         if let Some(parent) = path.parent() {
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
                 tracing::error!("Error creating directories to {}: {err}", path.display());
             }
         }
-        let (path, file) = match tokio::task::spawn_blocking(move ||{
+
+        next = Instant::now();
+        timings.push(format!(r#"resolveImplRemoteFSCreateDirAll;dur={};desc="Resolve Impl: Remote: Create All Local Dirs""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
+
+        let (path, file, mut timings, mut start) = match tokio::task::spawn_blocking(move ||{
+            let mut start = start;
+            let mut next;
             let file = std::fs::File::create_new(&path)?;
+
+            next = Instant::now();
+            timings.push(format!(r#"resolveImplRemoteFSCreateFile;dur={};desc="Resolve Impl: Remote: Create new Local File""#, (next-start).as_server_timing_duration()));
+            core::mem::swap(&mut start, &mut next);
+
             #[cfg(feature = "locking")]
             file.lock()?;
-            Ok::<_, std::io::Error>((path, file))
+
+            next = Instant::now();
+            timings.push(format!(r#"resolveImplRemoteFSCreateFile;dur={};desc="Resolve Impl: Remote: Lock Local File Exclusively""#, (next-start).as_server_timing_duration()));
+            core::mem::swap(&mut start, &mut next);
+
+            Ok::<_, std::io::Error>((path, file, timings, start))
         }).await {
             Ok(Ok(v)) => v,
             Ok(Err(v)) => {
@@ -472,6 +561,10 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
         let mut hash = sha3::Sha3_512::default();
         let mut current_size = 0u64;
         use digest::Digest;
+
+        let mut next = Instant::now();
+        timings.push(format!(r#"resolveImplRemoteBeforeBodyRead;dur={};desc="Resolve Impl: Remote: Task Scheduling Delay""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
         loop {
             let body = match response.chunk().await {
                 Err(err) => {
@@ -522,6 +615,10 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 return Err(vec![GetRepoFileError::FileSeekFailed]);
             }
         }
+        next = Instant::now();
+        timings.push(format!(r#"resolveImplRemoteBodyRead;dur={};desc="Resolve Impl: Remote: Read Remote Response in Chunks to Local File and Hash""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
+
         let file = file.into_std().await;
         let (metadata, map) = match tokio::task::spawn_blocking(move ||{
             #[cfg(feature = "locking")]
@@ -543,13 +640,26 @@ async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, rep
                 return Err(vec![GetRepoFileError::FileLockFailed]);
             }
         };
-        Ok(StoredRepoPath::Mmap((metadata, map, hash.finalize())))
+
+        next = Instant::now();
+        timings.push(format!(r#"resolveImplRemoteFSRelockMemmap;dur={};desc="Resolve Impl: Remote: Release Exclusive Lock, Aquire Shared Lock and Memory-Map File""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
+        Ok(StoredRepoPath::Mmap{
+            metadata,
+            data: map,
+            hash: hash.finalize(),
+            timing: timings
+        })
     } else {
         Ok(StoredRepoPath::Upstream(response))
     }
 }
 async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+    let mut start = Instant::now();
+    let mut next;
     let mut errors = Vec::new();
+    let mut timing = Vec::new();
+
     macro_rules! delegate {
         ($path:ident) => {
             if !display_dir {
@@ -586,17 +696,36 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                 delegate!(path);
             }
 
+            next = Instant::now();
+            timing.push(format!(r#"resolveImplLocalFSMetadata;dur={};desc="Resolve Impl: Local: Query File Metadata""#, (next-start).as_server_timing_duration()));
+            core::mem::swap(&mut start, &mut next);
 
-            let (map, hash) = match tokio::task::spawn_blocking(move ||{
+            let (map, hash, mut timing, mut start) = match tokio::task::spawn_blocking(move ||{
+                let mut timings = Vec::new();
+                let mut start = start;
+                let mut next;
+
                 let file = match std::fs::File::open(&path) {
                     Ok(v) => v,
                     Err(v) => return (Err(v), path),
                 };
+
+                next = Instant::now();
+                timings.push(format!(r#"resolveImplLocalOpenFile;dur={};desc="Resolve Impl: Local: Opening File""#, (next-start).as_server_timing_duration()));
+                core::mem::swap(&mut start, &mut next);
+
                 #[cfg(feature = "locking")]
-                match file.lock_shared() {
-                    Ok(()) => {},
-                    Err(v) => return (Err(v), path),
-                };
+                {
+                    match file.lock_shared() {
+                        Ok(()) => {},
+                        Err(v) => return (Err(v), path),
+                    };
+
+                    next = Instant::now();
+                    timings.push(format!(r#"resolveImplLocalSharedFileLock;dur={};desc="Resolve Impl: Local: Aquiring Shared File Lock""#, (next-start).as_server_timing_duration()));
+                    core::mem::swap(&mut start, &mut next);
+                }
+
                 let map = match unsafe { memmap2::Mmap::map(&file) }  {
                     Ok(v) => v,
                     Err(v) => return (Err(v), path),
@@ -605,10 +734,21 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                     Ok(()) => {},
                     Err(v) => return (Err(v), path),
                 };
+                match map.advise(memmap2::Advice::WillNeed)  {
+                    Ok(()) => {},
+                    Err(v) => return (Err(v), path),
+                };
+                next = Instant::now();
+                timings.push(format!(r#"resolveImplLocalMemMapFile;dur={};desc="Resolve Impl: Local: Memory Map file""#, (next-start).as_server_timing_duration()));
+                core::mem::swap(&mut start, &mut next);
 
                 use digest::Digest;
                 let hash = sha3::Sha3_512::default().chain_update(&*map).finalize();
-                (Ok::<_, std::io::Error>((map, hash)), path)
+                next = Instant::now();
+                timings.push(format!(r#"resolveImplLocalETagFile;dur={};desc="Resolve Impl: Local: Calculate File ETag""#, (next-start).as_server_timing_duration()));
+                core::mem::swap(&mut start, &mut next);
+
+                (Ok::<_, std::io::Error>((map, hash, timings, start)), path)
             }).await {
                 Ok((Ok(v), _)) => v,
                 Ok((Err(err), path)) => {
@@ -621,7 +761,16 @@ async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> Resul
                 }
             };
 
-            Ok(StoredRepoPath::Mmap((metadata, map, hash)))
+            next = Instant::now();
+            timing.push(format!(r#"resolveImplLocalScheduleDelay;dur={};desc="Resolve Impl: Local: Scheduling Delay""#, (next-start).as_server_timing_duration()));
+            core::mem::swap(&mut start, &mut next);
+
+            Ok(StoredRepoPath::Mmap{
+                metadata,
+                data: map,
+                hash,
+                timing,
+            })
         }
         Err(err) => {
             handle_err!(err, path);
