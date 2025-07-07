@@ -84,7 +84,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let mut content = Content::Mmap(map);
     let content_type = ContentType::Binary;
     let mut header_map = rocket::http::HeaderMap::new();
-    header_map.add(rocket::http::Header::new("ETag", base64::engine::general_purpose::STANDARD.encode(&*hash)));
+    header_map.add(rocket::http::Header::new("ETag", format!(r#""{}""#,base64::engine::general_purpose::STANDARD.encode(&*hash))));
     if let Ok(modification_datetime) = metadata.modified() {
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
         header_map.add(rocket::http::Header::new("Last-Modified", modification_datetime.to_rfc2822()));
