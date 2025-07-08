@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::io::SeekFrom;
 use std::sync::LazyLock;
 use std::time::Instant;
 use rocket::http::{ContentType, Status};
 use rocket::request::Outcome;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::repository::Repository;
 use crate::status::{Content, Return};
 
@@ -69,7 +71,29 @@ async fn async_main() -> anyhow::Result<()> {
             signal.recv().await;
             let start = Instant::now();
             tracing::info!("Clearing Repository Cache");
-            *REPOSITORIES.write().await = HashMap::new();
+            for (key, (file, repo)) in REPOSITORIES.write().await.iter_mut() {
+                let mut content = String::new();
+                match file.seek(SeekFrom::Start(0)).await {
+                    Ok(_) => {},
+                    Err(err) => {
+                        tracing::error!("Could not seek file for {key}. Keeping old config. Error: {err}");
+                        return;
+                    }
+                }
+                match file.read_to_string(&mut content).await {
+                    Ok(_) => {},
+                    Err(err) => {
+                        tracing::error!("Could not read file for {key}. Keeping old config. Error: {err}");
+                        return;
+                    }
+                }
+                match quick_xml::de::from_str(&content){
+                    Ok(v) => *repo = v,
+                    Err(err) => {
+                        tracing::error!("Failed Deserializing config for {key}. Keeping old Config. Error: {err}");
+                    }
+                }
+            }
             let time = start.elapsed();
             tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
         });
