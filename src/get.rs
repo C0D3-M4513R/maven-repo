@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Component, PathBuf};
 use base64::Engine;
-use rocket::http::{ContentType, Status};
+use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
 use crate::repository::get_repo_config;
@@ -26,6 +26,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let mut timings = Vec::new();
     let mut start = Instant::now();
     let mut next;
+    let mut header_map = HeaderMap::new();
 
     let auth = match auth {
         Some(Err(err)) => return err,
@@ -74,8 +75,14 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     core::mem::swap(&mut start, &mut next);
 
     match config.check_auth(rocket::http::Method::Get, auth, str_path) {
-        Err(err) => return err,
-        Ok(_) => {},
+        Err(mut err) => {
+            err.header_map.get_or_insert_default().add_raw("Vary", "Authorization");
+            return err
+        },
+        Ok(true) => {
+            header_map.add_raw("Vary", "Authorization");
+        },
+        Ok(false) => {},
     }
     next = Instant::now();
     timings.push(format!(r#"verifyAuth;dur={};desc="Verify Authentication Information""#, (next-start).as_server_timing_duration()));
@@ -122,7 +129,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     };
     timings.append(&mut timing);
 
-    header_check(repo, &path, &config, str_path, &mut timings, map, &request_headers, hash, &metadata, &mut start, &mut next).await
+    header_check(repo, &path, &config, str_path, &mut timings, map, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await
 }
 enum StoredRepoPath{
     Mmap{

@@ -78,7 +78,7 @@ pub struct PathAuthorization{
 }
 
 impl Repository {
-    pub fn check_auth(&self, method: rocket::http::Method, auth: Option<BasicAuthentication>, path: &str) -> Result<(), Return> {
+    pub fn check_auth(&self, method: rocket::http::Method, auth: Option<BasicAuthentication>, path: &str) -> Result<bool, Return> {
         let needs_auth = match method {
             rocket::http::Method::Get => !self.publicly_readable.unwrap_or(true),
             _ => true,
@@ -117,8 +117,11 @@ impl Repository {
             } {
                 return Err(crate::FORBIDDEN);
             }
+
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 }
 

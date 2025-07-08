@@ -1,6 +1,6 @@
 use std::path::Path;
 use base64::Engine;
-use rocket::http::{ContentType, Status};
+use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
 use crate::err::GetRepoFileError;
 use crate::etag::ETagValidator;
@@ -20,6 +20,7 @@ pub async fn header_check(
     request_headers: &RequestHeaders<'_>,
     hash: blake3::Hash,
     metadata: &std::fs::Metadata,
+    mut header_map: HeaderMap<'_>,
     start: &mut Instant,
     next: &mut Instant,
 ) -> Return {
@@ -27,7 +28,6 @@ pub async fn header_check(
     let old_hash = tokio::sync::OnceCell::new();
     let mut content = None;
     let content_type = ContentType::Binary;
-    let mut header_map = rocket::http::HeaderMap::new();
     header_map.add(rocket::http::Header::new("ETag", format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()))));
     if let Ok(modification_datetime) = metadata.modified() {
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
