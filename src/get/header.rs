@@ -4,8 +4,7 @@ use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
 use crate::err::GetRepoFileError;
 use crate::etag::ETagValidator;
-use crate::get::{serve_repository_stored_path, StoredRepoPath};
-use crate::repository::{Repository, Upstream};
+use crate::repository::Repository;
 use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
 use crate::status::{Content, Return};
@@ -20,7 +19,7 @@ pub async fn header_check(
     request_headers: &RequestHeaders<'_>,
     hash: blake3::Hash,
     metadata: &std::fs::Metadata,
-    mut header_map: HeaderMap<'_>,
+    mut header_map: HeaderMap<'static>,
     start: &mut Instant,
     next: &mut Instant,
 ) -> Return {
