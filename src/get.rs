@@ -148,6 +148,10 @@ impl StoredRepoPath {
                 let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_owned();
                 let mut v = v.into_iter().collect::<Vec<_>>();
                 v.sort();
+                let repo = repo.strip_prefix("/").unwrap_or(repo);
+                let repo = repo.strip_suffix("/").unwrap_or(repo);
+                let path = path.strip_prefix("/").unwrap_or(path);
+                let path = path.strip_suffix("/").unwrap_or(path);
                 for entry in v {
                     out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
                 }
