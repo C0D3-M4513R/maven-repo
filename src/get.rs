@@ -78,7 +78,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let resolve_impl = get_repo_file_impl(repo, path.as_path(), str_path, config, &mut timings).await;
+    let resolve_impl = get_repo_file_impl(repo, path.as_path(), str_path, config.clone(), &mut timings).await;
     next = Instant::now();
     timings.push(format!(r#"resolveImpl;dur={};desc="Total Resolve Implementation""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
@@ -127,6 +127,16 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     if let Ok(modification_datetime) = metadata.modified() {
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
         header_map.add(rocket::http::Header::new("Last-Modified", modification_datetime.to_rfc2822()));
+    }
+
+    if str_path.ends_with("maven-metadata.xml") {
+        for i in &config.cache_control_metadata {
+            header_map.add(i.clone());
+        }
+    } else {
+        for i in &config.cache_control {
+            header_map.add(i.clone());
+        }
     }
 
     // Check for If-None-Match header

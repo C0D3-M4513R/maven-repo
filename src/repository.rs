@@ -20,6 +20,10 @@ pub struct Repository{
     pub hide_directory_listings: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_control: Vec<Header>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_control_metadata: Vec<Header>,
     #[serde(default)]
     pub upstreams: Vec<Upstream>,
     #[serde(default)]
@@ -35,6 +39,24 @@ pub enum Upstream{
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalUpstream{
     pub path: String, 
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Header{
+    pub name: String,
+    pub value: String,
+}
+impl From<Header> for rocket::http::Header<'static> {
+    fn from(value: Header) -> Self {
+        Self::new(value.name, value.value)
+    }
+}
+impl From<rocket::http::Header<'static>> for Header {
+    fn from(value: rocket::http::Header<'static>) -> Self {
+        Self{
+            name: value.name.into_string(),
+            value: value.value.into_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
