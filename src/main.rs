@@ -67,7 +67,7 @@ mod private {
         let mut contents = String::new();
         file.read_to_string(&mut contents).await?;
 
-        let config = serde_json::from_str::<Repository>(contents.as_str())?;
+        let config:Repository = serde_json::from_str(&contents)?;
         Ok(config)
     }
     pub async fn get_main_config() -> anyhow::Result<Arc<Repository>> {
@@ -157,7 +157,7 @@ async fn async_main() -> anyhow::Result<()> {
                         continue;
                     }
                 }
-                let mut config = match quick_xml::de::from_str::<Repository>(&content){
+                let mut config = match serde_json::from_str::<Repository>(&content){
                     Ok(v) => v,
                     Err(err) => {
                         tracing::error!("Failed Deserializing config for {key}. Keeping old Config. Error: {err}");
