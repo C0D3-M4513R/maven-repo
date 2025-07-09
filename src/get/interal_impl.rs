@@ -87,7 +87,7 @@ pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config:
         let remote_path = LazyLock::new(||Arc::<Path>::from(path));
         let request_url = LazyLock::new(||Arc::<str>::from({
             let mut domain = String::new();
-            match request_headers.0.get_one("X-Forwarded-Proto") {
+            match request_headers.headers.get_one("X-Forwarded-Proto") {
                 Some(v) => {
                     domain.push_str(v);
                     domain.push_str("://");
