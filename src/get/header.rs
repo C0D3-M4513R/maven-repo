@@ -65,6 +65,10 @@ pub async fn header_check(
     }
 
     if dir_listing {
+        for i in &config.cache_control_dir_listings {
+            header_map.add_raw(i.name.clone(), i.value.clone());
+        }
+    } else {
         if str_path.ends_with("maven-metadata.xml") {
             for i in &config.cache_control_metadata {
                 header_map.add(i.clone());
@@ -74,10 +78,6 @@ pub async fn header_check(
             for i in &config.cache_control_file {
                 header_map.add(i.clone());
             }
-        }
-    } else {
-        for i in &config.cache_control_dir_listings {
-            header_map.add_raw(i.name.clone(), i.value.clone());
         }
     }
 
@@ -183,14 +183,14 @@ pub async fn header_check(
                         Ok(http_time) => {
                             if http_time > modification_datetime {
                                 status = Status::NotModified;
-    
+
                                 *next = Instant::now();
                                 timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
                                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                                 core::mem::swap(start, next);
-    
+
                                 header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-    
+
                                 return Return{
                                     status,
                                     content: Content::None,
@@ -204,10 +204,10 @@ pub async fn header_check(
                             timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
-    
+
                             header_map.remove_all();
                             header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-    
+
                             return Return{
                                 status: Status::BadRequest,
                                 content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
@@ -223,13 +223,13 @@ pub async fn header_check(
                     Ok(http_time) => {
                         if http_time <= modification_datetime {
                             status = Status::PreconditionFailed;
-    
+
                             *next = Instant::now();
                             timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
                             header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-    
+
                             return Return{
                                 status,
                                 content: Content::None,
