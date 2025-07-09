@@ -27,7 +27,7 @@ pub async fn serve_remote_repository(
     let url = remote.url;
     let response = match crate::CLIENT
         .get(format!("{url}/{str_path}"))
-        .header("Referrer", request_url.as_ref())
+        .header("X-Downstream-Repo-Link", request_url.as_ref())
         .header("X-Forwarded-For", remote_client.map(|v|v.to_canonical().to_string()).unwrap_or_else(String::new))
         .timeout(remote.timeout)
         .send()
