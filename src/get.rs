@@ -96,21 +96,18 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let (metadata, map, hash, mut timing) = match resolve_impl {
-        Ok(StoredRepoPath::Mmap{metadata, data, hash, timing}) => (metadata, data, hash, timing),
-        Ok(StoredRepoPath::DirListing(dirs)) => {
-            let mut ret = StoredRepoPath::DirListing(dirs).to_return(str_path.as_ref(), &repo);
-            let header_map = ret.header_map.get_or_insert_default();
-            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-            for i in &config.cache_control_dir_listings {
-                header_map.add_raw(i.name.clone(), i.value.clone());
-            }
-            config.apply_cache_control(&mut ret);
-            return ret;
+    let (metadata, content, hash, mut timing, dir_listing) = match resolve_impl {
+        Ok(StoredRepoPath::Mmap{metadata, data, hash, timing}) => (vec![metadata], Content::Mmap(data), hash, timing, false),
+        Ok(StoredRepoPath::DirListing{metadata, entries}) => {
+            let out = entries_to_content(&entries, str_path.as_ref(), repo);
+            let hash = blake3::Hasher::new().update(out.as_bytes()).finalize();
+            (metadata, Content::String(out), hash, Vec::new(), true)
         },
         Ok(StoredRepoPath::Upstream(upstream)) => {
             let mut ret = StoredRepoPath::Upstream(upstream).to_return(str_path.as_ref(), &repo);
-            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            let header_map  = ret.header_map.get_or_insert_default();
+            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            header_map.add(rocket::http::Header::new("Cache-Control", "no-store"));
             config.apply_cache_control(&mut ret);
             return ret;
         },
@@ -142,7 +139,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     };
     timings.append(&mut timing);
 
-    let mut ret = header_check(repo, &path, &config, str_path, &mut timings, map, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
+    let mut ret = header_check(repo, &path, &config, str_path, &mut timings, content, dir_listing, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
     config.apply_cache_control(&mut ret);
     ret
 }
@@ -154,23 +151,31 @@ enum StoredRepoPath{
         timing: Vec<String>,
     },
     Upstream(reqwest::Response),
-    DirListing(HashSet<String>),
+    DirListing{
+        metadata: Vec<std::fs::Metadata>,
+        entries: HashSet<String>,
+    }
+}
+fn entries_to_content(entries: &HashSet<String>, path: &str, repo:&str) -> String {
+    let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_owned();
+    let mut v = entries.into_iter().collect::<Vec<_>>();
+    v.sort();
+    let repo = repo.strip_prefix("/").unwrap_or(repo);
+    let repo = repo.strip_suffix("/").unwrap_or(repo);
+    let path = path.strip_prefix("/").unwrap_or(path);
+    let path = path.strip_suffix("/").unwrap_or(path);
+    for entry in v {
+        out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
+    }
+    out.push_str("</ul></body></html>");
+
+    out
 }
 impl StoredRepoPath {
     pub fn to_return(self, path: &str, repo:&str) -> Return {
         match self {
-            Self::DirListing(v) => {
-                let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_owned();
-                let mut v = v.into_iter().collect::<Vec<_>>();
-                v.sort();
-                let repo = repo.strip_prefix("/").unwrap_or(repo);
-                let repo = repo.strip_suffix("/").unwrap_or(repo);
-                let path = path.strip_prefix("/").unwrap_or(path);
-                let path = path.strip_suffix("/").unwrap_or(path);
-                for entry in v {
-                    out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
-                }
-                out.push_str("</ul></body></html>");
+            Self::DirListing{entries, ..} => {
+                let out = entries_to_content(&entries, path, repo);
                 Return{
                     status: Status::Ok,
                     content: Content::String(out),

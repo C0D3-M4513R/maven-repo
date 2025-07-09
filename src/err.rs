@@ -17,7 +17,6 @@ pub enum GetRepoFileError{
     ReadDirectoryEntryNonUTF8Name,
 
     Panicked,
-    NotSupportedByOs,
 
     InvalidUTF8,
     BadRequestPath,
@@ -59,7 +58,6 @@ impl GetRepoFileError {
             Self::ReadDirectoryEntry => "Error whist reading directory entries",
             Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names",
             Self::Panicked => "Error: implementation panicked",
-            Self::NotSupportedByOs => "Error: A function was unsupported by the Os",
             Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters",
             Self::BadRequestPath => "Error: Request Path failed sanity checks",
             Self::UpstreamRequestError => "Error: Failed to send a request to the Upstream",
@@ -88,7 +86,7 @@ impl GetRepoFileError {
     }
     pub const fn allowed_status_codes_slice(self) -> &'static [Status] {
         match self {
-            Self::MainConfigError =>                     &[Status::InternalServerError],
+            Self::MainConfigError =>                &[Status::InternalServerError],
             Self::OpenConfig =>                     &[Status::InternalServerError],
             Self::ReadConfig =>                     &[Status::InternalServerError],
             Self::ParseConfig =>                    &[Status::InternalServerError],
@@ -98,7 +96,6 @@ impl GetRepoFileError {
             Self::ReadDirectoryEntry =>             &[Status::InternalServerError],
             Self::ReadDirectoryEntryNonUTF8Name =>  &[Status::BadRequest, Status::InternalServerError],
             Self::Panicked =>                       &[Status::InternalServerError],
-            Self::NotSupportedByOs =>               &[Status::InternalServerError],
             Self::InvalidUTF8 =>                    &[Status::BadRequest, Status::InternalServerError],
             Self::BadRequestPath =>                 &[Status::BadRequest, Status::InternalServerError],
             Self::UpstreamRequestError =>           &[Status::InternalServerError],

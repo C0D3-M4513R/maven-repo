@@ -3,7 +3,6 @@ use std::path::Path;
 use base64::Engine;
 use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
-use crate::err::GetRepoFileError;
 use crate::etag::ETagValidator;
 use crate::repository::Repository;
 use crate::RequestHeaders;
@@ -16,39 +15,69 @@ pub async fn header_check(
     config: &Repository,
     str_path: &str,
     timings: &mut Vec<String>,
-    map: memmap2::Mmap,
+    mut content: Content,
+    dir_listing: bool,
     request_headers: &RequestHeaders<'_>,
     hash: blake3::Hash,
-    metadata: &std::fs::Metadata,
+    metadata: &Vec<std::fs::Metadata>,
     mut header_map: HeaderMap<'static>,
     start: &mut Instant,
     next: &mut Instant,
 ) -> Return {
     let mut status = Status::Ok;
-    let mut content = None;
-    let mut content_type = if config.infer_content_type_on_file_extension.unwrap_or(true) {
-        path.extension()
-            .and_then(OsStr::to_str)
-            .and_then(ContentType::from_extension)
-            .unwrap_or(ContentType::Binary)
+    let mut content_type = if dir_listing {
+        ContentType::HTML
     } else {
-        ContentType::Binary
+        if config.infer_content_type_on_file_extension.unwrap_or(true) {
+            path.extension()
+                .and_then(OsStr::to_str)
+                .and_then(ContentType::from_extension)
+                .unwrap_or(ContentType::Binary)
+        } else {
+            ContentType::Binary
+        }
     };
 
     header_map.add(rocket::http::Header::new("ETag", format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()))));
-    if let Ok(modification_datetime) = metadata.modified() {
-        let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
+    let (modification_datetime, modification_err) = {
+        let (modification_datetime, errors) = metadata.iter().map(|v|v.modified()).fold((None, Vec::new()), |(mut time, mut errors), res|{
+            match res {
+                Ok(v) => match &time {
+                    None => {time = Some(v);},
+                    Some(cmp_time) => {
+                        if *cmp_time < v {
+                            time = Some(v);
+                        }
+                    }
+                },
+                Err(err) => {
+                    tracing::error!("Failed to get modification time for {}: {err}", path.display());
+                    errors.push(err);
+                }
+            }
+            (time, errors)
+        });
+
+        (modification_datetime.map(chrono::DateTime::<chrono::Utc>::from), errors)
+    };
+    if let Some(modification_datetime) = modification_datetime {
         header_map.add(rocket::http::Header::new("Last-Modified", modification_datetime.to_rfc2822()));
     }
 
-    if str_path.ends_with("maven-metadata.xml") {
-        for i in &config.cache_control_metadata {
-            header_map.add(i.clone());
-            content_type = ContentType::XML;
+    if dir_listing {
+        if str_path.ends_with("maven-metadata.xml") {
+            for i in &config.cache_control_metadata {
+                header_map.add(i.clone());
+                content_type = ContentType::XML;
+            }
+        } else {
+            for i in &config.cache_control_file {
+                header_map.add(i.clone());
+            }
         }
     } else {
-        for i in &config.cache_control_file {
-            header_map.add(i.clone());
+        for i in &config.cache_control_dir_listings {
+            header_map.add_raw(i.name.clone(), i.value.clone());
         }
     }
 
@@ -58,7 +87,7 @@ pub async fn header_check(
         contains_none_match = true;
         let v = match ETagValidator::parse(i) {
             Some(ETagValidator::Any) => {
-                content = Some(Content::None);
+                content = Content::None;
                 status = Status::NotModified;
                 break
             },
@@ -84,7 +113,7 @@ pub async fn header_check(
         // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
         for tag in v {
             if tag.matches(&hash).await.unwrap_or(false) {
-                content = Some(Content::None);
+                content = Content::None;
                 status = Status::NotModified;
                 break
             }
@@ -146,28 +175,61 @@ pub async fn header_check(
         //When used in combination with If-None-Match, it is ignored - https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
         (!contains_none_match && request_headers.headers.contains("If-Modified-Since"))
     {
-        let modification_datetime = match metadata.modified() {
-            Ok(v) => v,
-            Err(err) => {
-                tracing::error!("Failed to get modification time for {}: {err}", path.display());
-                return GetRepoFileError::NotSupportedByOs.to_return()
-            },
-        };
-        let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
-        if !contains_none_match {
-            for i in request_headers.headers.get("If-Modified-Since") {
-                match chrono::DateTime::parse_from_rfc2822(i) {
-                    Ok(http_time) => {
-                        if http_time > modification_datetime {
-                            status = Status::NotModified;
-
+        if let Some(modification_datetime) = modification_datetime {
+            let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
+            if !contains_none_match {
+                for i in request_headers.headers.get("If-Modified-Since") {
+                    match chrono::DateTime::parse_from_rfc2822(i) {
+                        Ok(http_time) => {
+                            if http_time > modification_datetime {
+                                status = Status::NotModified;
+    
+                                *next = Instant::now();
+                                timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                                tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
+                                core::mem::swap(start, next);
+    
+                                header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+    
+                                return Return{
+                                    status,
+                                    content: Content::None,
+                                    content_type,
+                                    header_map: Some(header_map),
+                                };
+                            }
+                        },
+                        Err(err) => {
                             *next = Instant::now();
                             timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
-
+    
+                            header_map.remove_all();
                             header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-
+    
+                            return Return{
+                                status: Status::BadRequest,
+                                content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
+                                content_type: ContentType::Text,
+                                header_map: Some(header_map),
+                            }
+                        }
+                    }
+                }
+            }
+            for i in request_headers.headers.get("If-Unmodified-Since") {
+                match chrono::DateTime::parse_from_rfc2822(i) {
+                    Ok(http_time) => {
+                        if http_time <= modification_datetime {
+                            status = Status::PreconditionFailed;
+    
+                            *next = Instant::now();
+                            timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                            tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
+                            core::mem::swap(start, next);
+                            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+    
                             return Return{
                                 status,
                                 content: Content::None,
@@ -181,7 +243,6 @@ pub async fn header_check(
                         timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                         core::mem::swap(start, next);
-
                         header_map.remove_all();
                         header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
 
@@ -194,43 +255,12 @@ pub async fn header_check(
                     }
                 }
             }
-        }
-        for i in request_headers.headers.get("If-Unmodified-Since") {
-            match chrono::DateTime::parse_from_rfc2822(i) {
-                Ok(http_time) => {
-                    if http_time <= modification_datetime {
-                        status = Status::PreconditionFailed;
-
-                        *next = Instant::now();
-                        timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
-                        tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
-                        core::mem::swap(start, next);
-                        header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-
-                        return Return{
-                            status,
-                            content: Content::None,
-                            content_type,
-                            header_map: Some(header_map),
-                        };
-                    }
-                },
-                Err(err) => {
-                    *next = Instant::now();
-                    timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
-                    tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
-                    core::mem::swap(start, next);
-                    header_map.remove_all();
-                    header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-
-
-                    return Return{
-                        status: Status::BadRequest,
-                        content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
-                        content_type: ContentType::Text,
-                        header_map: Some(header_map),
-                    }
-                }
+        } else {
+            return Return{
+                status: Status::BadRequest,
+                content: Content::String(modification_err.iter().map(|v|format!("Could not get Modification time: {v}")).collect::<Vec<_>>().join("\n")),
+                content_type: ContentType::Text,
+                header_map: Some(header_map),
             }
         }
     }
@@ -240,7 +270,6 @@ pub async fn header_check(
     core::mem::swap(start, next);
 
     header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
-    let content = content.unwrap_or(Content::Mmap(map));
 
     Return {
         status,

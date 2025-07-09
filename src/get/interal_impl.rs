@@ -27,9 +27,10 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
             match task {
                 Ok(Ok(v)) => {
                     out = match (out, v) {
-                        (Some(StoredRepoPath::DirListing(mut out)), StoredRepoPath::DirListing(v)) => {
-                            out.extend(v);
-                            Some(StoredRepoPath::DirListing(out))
+                        (Some(StoredRepoPath::DirListing{mut metadata, mut entries}), StoredRepoPath::DirListing{metadata: mut metadata_1, entries: entries_1}) => {
+                            entries.extend(entries_1);
+                            metadata.append(&mut metadata_1);
+                            Some(StoredRepoPath::DirListing{metadata, entries})
                         }
                         (Some(out), _) => {
                             js.abort_all();

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs::Metadata;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use tokio::time::Instant;
@@ -11,29 +12,13 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> R
     let mut next;
     let mut errors = Vec::new();
     let mut timing = Vec::new();
-
-    macro_rules! delegate {
-        ($path:ident) => {
-            if !display_dir {
-                errors.push(GetRepoFileError::NotFound);
-            } else {
-                match serve_repository_stored_dir(&$path).await {
-                    Ok(v) => return Ok(v),
-                    Err(mut err) => errors.append(&mut err),
-                }
-            }
-            return Err(errors);
-        }
-    }
+    
     macro_rules! handle_err {
         ($err:ident, $path:ident) => {
             match $err.kind(){
-                ErrorKind::IsADirectory if display_dir => {
-                    delegate!($path);
-                }
                 ErrorKind::NotFound => errors.push(GetRepoFileError::NotFound),
                 _ => {
-                    tracing::warn!("Error opening file: {}", $err);
+                    tracing::warn!("Error opening file {}: {}", $path.display(), $err);
                     errors.push(GetRepoFileError::OpenFile)
                 },
             }
@@ -45,7 +30,15 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> R
             //We only check, if the metadata says, that this is a dir, because non-files might also be able to be read (e.g. unix sockets).
             //Theoretically everything inside the maven repos should be a directory or file.
             if metadata.is_dir() {
-                delegate!(path);
+                if !display_dir {
+                    errors.push(GetRepoFileError::NotFound);
+                } else {
+                    match serve_repository_stored_dir(&path, metadata).await {
+                        Ok(v) => return Ok(v),
+                        Err(mut err) => errors.append(&mut err),
+                    }
+                }
+                return Err(errors);
             }
 
             next = Instant::now();
@@ -137,7 +130,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool) -> R
     }
 }
 
-async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+async fn serve_repository_stored_dir(path: &PathBuf, metadata: Metadata) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     match tokio::fs::read_dir(&path).await {
         Err(err) => {
             match err.kind() {
@@ -168,7 +161,10 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<StoredRepoPath, V
                 };
                 out.insert(entry);
             }
-            Ok(StoredRepoPath::DirListing(out))
+            Ok(StoredRepoPath::DirListing{
+                metadata: vec![metadata],
+                entries: out,
+            })
         }
     }
 }
