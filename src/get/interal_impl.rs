@@ -131,7 +131,7 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
                         remote_str_path.clone(),
                         repo.clone(),
                         remote_path.clone(),
-                        config.stores_remote_upstream,
+                        config.stores_remote_upstream.unwrap_or(true),
                         config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE),
                         request_url.clone(),
                         request_headers.client_ip

@@ -4,6 +4,7 @@ use crate::status::{Content, Return};
 
 #[derive(Copy, Clone, Debug)]
 pub enum GetRepoFileError{
+    MainConfigError,
     OpenConfig,
     ReadConfig,
     ParseConfig,
@@ -48,6 +49,7 @@ impl GetRepoFileError {
     }
     pub const fn get_err(self) -> &'static str {
         match self {
+            Self::MainConfigError => "Error getting main config",
             Self::OpenConfig => "Error opening repo config file",
             Self::ReadConfig => "Error reading repo config",
             Self::ParseConfig => "Error parsing repo config",
@@ -86,6 +88,7 @@ impl GetRepoFileError {
     }
     pub const fn allowed_status_codes_slice(self) -> &'static [Status] {
         match self {
+            Self::MainConfigError =>                     &[Status::InternalServerError],
             Self::OpenConfig =>                     &[Status::InternalServerError],
             Self::ReadConfig =>                     &[Status::InternalServerError],
             Self::ParseConfig =>                    &[Status::InternalServerError],

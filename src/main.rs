@@ -38,7 +38,7 @@ const DEFAULT_MAX_FILE_SIZE:u64 = 4*1024*1024*1024;
 static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
     let mut map = reqwest::header::HeaderMap::new();
     map.insert("x-powered-by", reqwest::header::HeaderValue::from_static(env!("CARGO_PKG_REPOSITORY")));
-    
+
     reqwest::ClientBuilder::new()
         .default_headers(map)
         .user_agent(reqwest::header::HeaderValue::from_static(const_format::formatcp!("{}/{} - {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"))))
@@ -47,6 +47,57 @@ static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
 
 });
 static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<String, (tokio::fs::File, Arc<Repository>)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
+mod private {
+    use std::io::SeekFrom;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use crate::repository::Repository;
+
+    static MAIN_CONFIG:tokio::sync::RwLock<Option<(tokio::fs::File, Arc<Repository>)>> = tokio::sync::RwLock::const_new(None);
+    async fn read_main_config() -> anyhow::Result<(tokio::fs::File, Arc<Repository>)> {
+        let mut file = tokio::fs::File::open("..main.json").await?;
+        let config = read_main_config_file(&mut file, false).await?;
+        Ok((file, Arc::new(config)))
+    }
+    async fn read_main_config_file(file: &mut tokio::fs::File, seek: bool) -> anyhow::Result<Repository> {
+        if seek{
+            file.seek(SeekFrom::Start(0)).await?;
+        }
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).await?;
+
+        let config = serde_json::from_str::<Repository>(contents.as_str())?;
+        Ok(config)
+    }
+    pub async fn get_main_config() -> anyhow::Result<Arc<Repository>> {
+        //fast path
+        if let Some((_, v)) = &*MAIN_CONFIG.read().await{
+            return Ok(v.clone());
+        }
+        //we might have initialized the config in another thread in the meantime
+        let mut config_mut = MAIN_CONFIG.write().await;
+        if let Some((_, v)) = &*config_mut{
+            return Ok(v.clone());
+        }
+
+        let (file, config) = read_main_config().await?;
+        *config_mut = Some((file, config.clone()));
+
+        Ok(config)
+    }
+    pub async fn refresh_config() -> anyhow::Result<Arc<Repository>> {
+        let mut config_mut = MAIN_CONFIG.write().await;
+        if let Some((file, v)) = &mut *config_mut{
+            *Arc::make_mut(v) = read_main_config_file(file, true).await?;
+            Ok(v.clone())
+        } else {
+            let (file, config) = read_main_config().await?;
+            *config_mut = Some((file, config.clone()));
+            Ok(config)
+        }
+    }
+}
 fn main() -> anyhow::Result<()>{
     match dotenvy::dotenv() {
         Ok(_) => {},
@@ -79,36 +130,46 @@ async fn async_main() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-        tokio::task::spawn(async move {
+        tokio::task::spawn(async move {loop {
             signal.recv().await;
             let start = Instant::now();
             tracing::info!("Clearing Repository Cache");
+            let main_config = match private::refresh_config().await {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::error!("There was an error, whilst reading the main config: {err}");
+                    continue;
+                }
+            };
             for (key, (file, repo)) in REPOSITORIES.write().await.iter_mut() {
                 let mut content = String::new();
                 match file.seek(SeekFrom::Start(0)).await {
                     Ok(_) => {},
                     Err(err) => {
                         tracing::error!("Could not seek file for {key}. Keeping old config. Error: {err}");
-                        return;
+                        continue;
                     }
                 }
                 match file.read_to_string(&mut content).await {
                     Ok(_) => {},
                     Err(err) => {
                         tracing::error!("Could not read file for {key}. Keeping old config. Error: {err}");
-                        return;
+                        continue;
                     }
                 }
-                match quick_xml::de::from_str(&content){
-                    Ok(v) => *Arc::make_mut(repo) = v,
+                let mut config = match quick_xml::de::from_str::<Repository>(&content){
+                    Ok(v) => v,
                     Err(err) => {
                         tracing::error!("Failed Deserializing config for {key}. Keeping old Config. Error: {err}");
+                        continue;
                     }
-                }
+                };
+                config.merge(&main_config);
+                *Arc::make_mut(repo) = config;
             }
             let time = start.elapsed();
             tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
-        });
+        }});
     }
     let  _ = rocket::build()
         .attach(AddSourceLink)

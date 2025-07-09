@@ -14,7 +14,8 @@ use crate::status::{Content, Return};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repository{
-    pub stores_remote_upstream: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stores_remote_upstream: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publicly_readable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,7 +37,36 @@ pub struct Repository{
     #[serde(default)]
     pub tokens: HashMap<String, Token>
 }
+impl Default for Repository{
+    fn default() -> Self {
+        Self{
+            stores_remote_upstream: None,
+            publicly_readable: None,
+            hide_directory_listings: None,
+            infer_content_type_on_file_extension: None,
+            max_file_size: None,
+            cache_control_file: Vec::new(),
+            cache_control_metadata: Vec::new(),
+            cache_control_dir_listings: Vec::new(),
+            cache_control_status_code: Default::default(),
+            upstreams: Vec::new(),
+            tokens: Default::default(),
+        }
+    }
+}
 impl Repository {
+    pub fn merge(&mut self, other: &Repository) {
+        self.stores_remote_upstream = self.stores_remote_upstream.or(other.stores_remote_upstream);
+        self.publicly_readable = self.publicly_readable.or(other.publicly_readable);
+        self.hide_directory_listings = self.hide_directory_listings.or(other.hide_directory_listings);
+        self.infer_content_type_on_file_extension = self.infer_content_type_on_file_extension.or(other.infer_content_type_on_file_extension);
+        self.max_file_size = self.max_file_size.or(other.max_file_size);
+        self.cache_control_file.extend(other.cache_control_file.clone());
+        self.cache_control_metadata.extend(other.cache_control_metadata.clone());
+        self.cache_control_dir_listings.extend(other.cache_control_dir_listings.clone());
+        self.cache_control_status_code.extend(other.cache_control_status_code.clone());
+        self.tokens.extend(other.tokens.clone());
+    }
     pub fn apply_cache_control(&self, ret: &mut Return) {
         let header_map = ret.header_map.get_or_insert_default();
         if let Some(headers) = self.cache_control_status_code.get(&ret.status.code) {
@@ -151,6 +181,13 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Arc<Repository>, GetR
         },
         None => {},
     }
+    let main_config = match crate::private::get_main_config().await{
+        Ok(v) => v,
+        Err(err) => {
+            tracing::error!("Error getting main repo config file: {err}");
+            return Err(GetRepoFileError::MainConfigError);
+        }
+    };
     tracing::info!("Getting repo config");
     let mut file = match tokio::fs::File::open(format!(".{repo}.json")).await {
         Err(err) => {
@@ -178,13 +215,14 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Arc<Repository>, GetR
         Ok(v) => v,
     };
     let config = config;
-    let config:Repository = match serde_json::from_str(&config) {
+    let mut config:Repository = match serde_json::from_str(&config) {
         Err(err) => {
             tracing::error!("Error parsing repo config: {err}");
             return Err(GetRepoFileError::ParseConfig);
         }
         Ok(v) => v,
     };
+    config.merge(&main_config);
     let config = Arc::new(config);
     match crate::REPOSITORIES.write().await.insert(repo.clone().into_owned(), (file, config.clone())) {
         None => {},
