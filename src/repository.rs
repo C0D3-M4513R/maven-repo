@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
+use std::sync::Arc;
 use std::time::Duration;
 use rocket::http::{ContentType, Status};
 use serde_derive::{Deserialize, Serialize};
@@ -19,15 +20,31 @@ pub struct Repository{
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_directory_listings: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infer_content_type_on_file_extension: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_size: Option<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cache_control: Vec<Header>,
+    #[serde(alias="cache_control", default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_control_file: Vec<Header>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_control_metadata: Vec<Header>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_control_dir_listings: Vec<Header>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub cache_control_status_code: HashMap<u16, Vec<Header>>,
     #[serde(default)]
     pub upstreams: Vec<Upstream>,
     #[serde(default)]
     pub tokens: HashMap<String, Token>
+}
+impl Repository {
+    pub fn apply_cache_control(&self, ret: &mut Return) {
+        let header_map = ret.header_map.get_or_insert_default();
+        if let Some(headers) = self.cache_control_status_code.get(&ret.status.code) {
+            for header in headers {
+                header_map.add_raw(header.name.clone(), header.value.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -126,7 +143,7 @@ impl Repository {
 }
 
 
-pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFileError> {
+pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Arc<Repository>, GetRepoFileError> {
     match crate::REPOSITORIES.read().await.get(repo.as_ref()) {
         Some((_, v)) => {
             tracing::info!("Using cached repo config");
@@ -168,6 +185,7 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFi
         }
         Ok(v) => v,
     };
+    let config = Arc::new(config);
     match crate::REPOSITORIES.write().await.insert(repo.clone().into_owned(), (file, config.clone())) {
         None => {},
         Some(_) => {
@@ -176,7 +194,7 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Repository, GetRepoFi
     }
     Ok(config)
 }
-pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(String, Repository)>, Vec<GetRepoFileError>) {
+pub async fn get_repo_look_locations(repo: &str, config: &Arc<Repository>) -> (Vec<(String, Arc<Repository>)>, Vec<GetRepoFileError>) {
     let mut start = Instant::now();
     let mut next;
 
@@ -192,16 +210,16 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
     let mut visited = HashSet::new();
 
     async fn check_repo(
-        js: &mut JoinSet<Result<(String, Repository), GetRepoFileError>>,
+        js: &mut JoinSet<Result<(String, Arc<Repository>), GetRepoFileError>>,
         repo: &str,
-        config: Repository,
+        config: Arc<Repository>,
         visited: &mut HashSet<String>,
-        out: &mut Vec<(String, Repository)>
+        out: &mut Vec<(String, Arc<Repository>)>
     ) {
         let mut configs = vec![(repo.to_owned(), config)];
         let repository_cache = crate::REPOSITORIES.read().await;
         while let Some((repo, config)) = configs.pop() {
-            for upstream in config.upstreams{
+            for upstream in &config.upstreams{
                 let upstream = match upstream {
                     Upstream::Local(upstream) => upstream,
                     Upstream::Remote(_) => continue,
@@ -213,8 +231,8 @@ pub async fn get_repo_look_locations(repo: &str, config: &Repository) -> (Vec<(S
                             configs.push((upstream.path.clone(), repo.clone()));
                         },
                         None => {
+                            let path = upstream.path.clone();
                             js.spawn(async move {
-                                let path = upstream.path;
                                 let out = get_repo_config(Cow::Borrowed(path.as_str())).await?;
                                 Ok((path, out))
                             });

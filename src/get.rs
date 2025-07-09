@@ -19,7 +19,7 @@ use crate::server_timings::AsServerTimingDuration;
 use local::serve_repository_stored_path;
 use remote::serve_remote_repository;
 use header::header_check;
-use interal_impl::get_repo_file_impl;
+use interal_impl::resolve_impl;
 
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
@@ -77,6 +77,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     match config.check_auth(rocket::http::Method::Get, auth, str_path) {
         Err(mut err) => {
             err.header_map.get_or_insert_default().add_raw("Vary", "Authorization");
+            config.apply_cache_control(&mut err);
             return err
         },
         Ok(true) => {
@@ -89,7 +90,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let resolve_impl = get_repo_file_impl(repo, path.as_path(), str_path, config.clone(), &mut timings, &request_headers, rocket_config).await;
+    let resolve_impl = resolve_impl(repo, path.as_path(), str_path, &config, &mut timings, &request_headers, rocket_config).await;
     next = Instant::now();
     timings.push(format!(r#"resolveImpl;dur={};desc="Total Resolve Implementation""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
@@ -97,9 +98,20 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
 
     let (metadata, map, hash, mut timing) = match resolve_impl {
         Ok(StoredRepoPath::Mmap{metadata, data, hash, timing}) => (metadata, data, hash, timing),
-        Ok(v) => {
-            let mut ret = v.to_return(str_path.as_ref(), &repo);
+        Ok(StoredRepoPath::DirListing(dirs)) => {
+            let mut ret = StoredRepoPath::DirListing(dirs).to_return(str_path.as_ref(), &repo);
+            let header_map = ret.header_map.get_or_insert_default();
+            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            for i in &config.cache_control_dir_listings {
+                header_map.add_raw(i.name.clone(), i.value.clone());
+            }
+            config.apply_cache_control(&mut ret);
+            return ret;
+        },
+        Ok(StoredRepoPath::Upstream(upstream)) => {
+            let mut ret = StoredRepoPath::Upstream(upstream).to_return(str_path.as_ref(), &repo);
             ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            config.apply_cache_control(&mut ret);
             return ret;
         },
         Err(v) => {
@@ -124,12 +136,15 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 header_map: Default::default(),
             };
             ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            config.apply_cache_control(&mut ret);
             return ret;
         }
     };
     timings.append(&mut timing);
 
-    header_check(repo, &path, &config, str_path, &mut timings, map, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await
+    let mut ret = header_check(repo, &path, &config, str_path, &mut timings, map, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
+    config.apply_cache_control(&mut ret);
+    ret
 }
 enum StoredRepoPath{
     Mmap{

@@ -9,7 +9,7 @@ use crate::repository::{get_repo_look_locations, Repository, Upstream};
 use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
 
-pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository, timings: &mut Vec<String>, request_headers: &RequestHeaders<'_>, rocket_config: &rocket::Config) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut Vec<String>, request_headers: &RequestHeaders<'_>, rocket_config: &rocket::Config) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
@@ -120,14 +120,14 @@ pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config:
             domain
         }));
         for (repo, config) in configs {
-            for upstream in config.upstreams {
+            for upstream in &config.upstreams {
                 let upstream = match upstream {
                     Upstream::Local(_) => continue,
                     Upstream::Remote(v) => v,
                 };
                 if upstreams.insert(upstream.url.clone()) {
                     js.spawn(serve_remote_repository(
-                        upstream,
+                        upstream.clone(),
                         remote_str_path.clone(),
                         repo.clone(),
                         remote_path.clone(),

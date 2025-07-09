@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::SeekFrom;
 use std::net::IpAddr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use rocket::http::{ContentType, Status};
 use rocket::request::Outcome;
@@ -46,7 +46,7 @@ static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
         .expect("Client to be initialized")
 
 });
-static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<String, (tokio::fs::File, Repository)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
+static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<String, (tokio::fs::File, Arc<Repository>)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
 fn main() -> anyhow::Result<()>{
     match dotenvy::dotenv() {
         Ok(_) => {},
@@ -100,7 +100,7 @@ async fn async_main() -> anyhow::Result<()> {
                     }
                 }
                 match quick_xml::de::from_str(&content){
-                    Ok(v) => *repo = v,
+                    Ok(v) => *Arc::make_mut(repo) = v,
                     Err(err) => {
                         tracing::error!("Failed Deserializing config for {key}. Keeping old Config. Error: {err}");
                     }

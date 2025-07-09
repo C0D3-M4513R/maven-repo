@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 use base64::Engine;
 use rocket::http::{ContentType, HeaderMap, Status};
@@ -26,7 +27,15 @@ pub async fn header_check(
     let mut status = Status::Ok;
     let old_hash = tokio::sync::OnceCell::new();
     let mut content = None;
-    let mut content_type = ContentType::Binary;
+    let mut content_type = if config.infer_content_type_on_file_extension.unwrap_or(true) {
+        path.extension()
+            .and_then(OsStr::to_str)
+            .and_then(ContentType::from_extension)
+            .unwrap_or(ContentType::Binary)
+    } else {
+        ContentType::Binary
+    };
+
     header_map.add(rocket::http::Header::new("ETag", format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()))));
     if let Ok(modification_datetime) = metadata.modified() {
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
@@ -39,7 +48,7 @@ pub async fn header_check(
             content_type = ContentType::XML;
         }
     } else {
-        for i in &config.cache_control {
+        for i in &config.cache_control_file {
             header_map.add(i.clone());
         }
     }
