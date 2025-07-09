@@ -26,7 +26,7 @@ pub async fn header_check(
     let mut status = Status::Ok;
     let old_hash = tokio::sync::OnceCell::new();
     let mut content = None;
-    let content_type = ContentType::Binary;
+    let mut content_type = ContentType::Binary;
     header_map.add(rocket::http::Header::new("ETag", format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()))));
     if let Ok(modification_datetime) = metadata.modified() {
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
@@ -36,6 +36,7 @@ pub async fn header_check(
     if str_path.ends_with("maven-metadata.xml") {
         for i in &config.cache_control_metadata {
             header_map.add(i.clone());
+            content_type = ContentType::XML;
         }
     } else {
         for i in &config.cache_control {
