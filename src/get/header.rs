@@ -25,7 +25,6 @@ pub async fn header_check(
     next: &mut Instant,
 ) -> Return {
     let mut status = Status::Ok;
-    let old_hash = tokio::sync::OnceCell::new();
     let mut content = None;
     let mut content_type = if config.infer_content_type_on_file_extension.unwrap_or(true) {
         path.extension()
@@ -84,7 +83,7 @@ pub async fn header_check(
         //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
         // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
         for tag in v {
-            if tag.matches(&map, &hash, &old_hash, timings).await.unwrap_or(false) {
+            if tag.matches(&hash).await.unwrap_or(false) {
                 content = Some(Content::None);
                 status = Status::NotModified;
                 break
@@ -121,7 +120,7 @@ pub async fn header_check(
             //This is strict checking, which is against spec, but we have 0 clue what the files actually contain
             // (and additionally this implementation disallows re-deploys via PUT [you'd have to DELETE and then PUT, once implemented])
             for tag in v {
-                if tag.matches(&map, &hash, &old_hash, timings).await.unwrap_or(false) {
+                if tag.matches(&hash).await.unwrap_or(false) {
                     any_match = true;
                     break
                 }
