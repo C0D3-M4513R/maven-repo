@@ -22,7 +22,7 @@ use header::header_check;
 use interal_impl::get_repo_file_impl;
 
 #[rocket::get("/<repo>/<path..>")]
-pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>) -> Return {
+pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
     let mut timings = Vec::new();
     let mut start = Instant::now();
     let mut next;
@@ -89,7 +89,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let resolve_impl = get_repo_file_impl(repo, path.as_path(), str_path, config.clone(), &mut timings).await;
+    let resolve_impl = get_repo_file_impl(repo, path.as_path(), str_path, config.clone(), &mut timings, &request_headers, rocket_config).await;
     next = Instant::now();
     timings.push(format!(r#"resolveImpl;dur={};desc="Total Resolve Implementation""#, (next-start).as_server_timing_duration()));
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());

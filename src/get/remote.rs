@@ -1,4 +1,5 @@
 use std::io::SeekFrom;
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 use reqwest::StatusCode;
@@ -9,7 +10,16 @@ use crate::get::StoredRepoPath;
 use crate::repository::RemoteUpstream;
 use crate::server_timings::AsServerTimingDuration;
 
-pub async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>, repo: String, path: Arc<Path>, stores_remote_upstream: bool, limit: u64) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn serve_remote_repository(
+    remote: RemoteUpstream,
+    str_path: Arc<str>,
+    repo: String,
+    path: Arc<Path>,
+    stores_remote_upstream: bool,
+    limit: u64,
+    request_url: Arc<str>,
+    remote_client: Option<IpAddr>, 
+) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
     let mut timings = Vec::new();
@@ -17,6 +27,8 @@ pub async fn serve_remote_repository(remote: RemoteUpstream, str_path: Arc<str>,
     let url = remote.url;
     let response = match crate::CLIENT
         .get(format!("{url}/{str_path}"))
+        .header("Referrer", request_url.as_ref())
+        .header("X-Forwarded-For", remote_client.map(|v|v.to_canonical().to_string()).unwrap_or_else(String::new))
         .timeout(remote.timeout)
         .send()
         .await {

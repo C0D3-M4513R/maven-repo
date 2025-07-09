@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::SeekFrom;
+use std::net::IpAddr;
 use std::sync::LazyLock;
 use std::time::Instant;
 use rocket::http::{ContentType, Status};
@@ -34,7 +35,17 @@ const FORBIDDEN: Return = Return{
 };
 const DEFAULT_MAX_FILE_SIZE:u64 = 4*1024*1024*1024;
 
-static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||reqwest::Client::new());
+static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
+    let mut map = reqwest::header::HeaderMap::new();
+    map.insert("x-powered-by", reqwest::header::HeaderValue::from_static(env!("CARGO_PKG_REPOSITORY")));
+    
+    reqwest::ClientBuilder::new()
+        .default_headers(map)
+        .user_agent(reqwest::header::HeaderValue::from_static(const_format::formatcp!("{}/{} - {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"))))
+        .build()
+        .expect("Client to be initialized")
+
+});
 static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<String, (tokio::fs::File, Repository)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
 fn main() -> anyhow::Result<()>{
     match dotenvy::dotenv() {
@@ -43,6 +54,7 @@ fn main() -> anyhow::Result<()>{
             eprintln!("Could not read .env: {err}");
         }
     }
+    LazyLock::force(&CLIENT);
     {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
@@ -123,12 +135,18 @@ impl rocket::fairing::Fairing for AddSourceLink {
         res.set_header(rocket::http::Header::new("X-Powered-By", env!("CARGO_PKG_REPOSITORY")));
     }
 }
-struct RequestHeaders<'a>(pub &'a rocket::http::HeaderMap<'a>);
+struct RequestHeaders<'a> {
+    pub headers: &'a rocket::http::HeaderMap<'a>,
+    pub client_ip: Option<IpAddr>
+}
 #[rocket::async_trait]
 impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
     type Error = Infallible;
 
     async fn from_request(request: &'a rocket::Request<'_>) -> Outcome<Self, Self::Error> {
-        Outcome::Success(Self(request.headers()))
+        Outcome::Success(Self{
+            headers: request.headers(),
+            client_ip: request.client_ip(),
+        })
     }
 }

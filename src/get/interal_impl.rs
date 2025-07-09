@@ -6,9 +6,10 @@ use tokio::time::Instant;
 use crate::err::GetRepoFileError;
 use crate::get::{serve_remote_repository, serve_repository_stored_path, StoredRepoPath};
 use crate::repository::{get_repo_look_locations, Repository, Upstream};
+use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
 
-pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository, timings: &mut Vec<String>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config: Repository, timings: &mut Vec<String>, request_headers: &RequestHeaders<'_>, rocket_config: &rocket::Config) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
@@ -84,6 +85,40 @@ pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config:
         let mut upstreams = HashSet::new();
         let remote_str_path = LazyLock::new(||Arc::<str>::from(str_path));
         let remote_path = LazyLock::new(||Arc::<Path>::from(path));
+        let request_url = LazyLock::new(||Arc::<str>::from({
+            let mut domain = String::new();
+            match request_headers.0.get_one("X-Forwarded-Proto") {
+                Some(v) => {
+                    domain.push_str(v);
+                    domain.push_str("://");
+                },
+                None => {
+                    if rocket_config.tls_enabled() {
+                        domain.push_str("https://");
+                    } else {
+                        domain.push_str("http://");
+                    }
+                },
+            };
+            match request_headers.headers.get("Host")
+                .chain(request_headers.headers.get("X-Forwarded-Host"))
+                .chain(request_headers.headers.get("X-Forwarded-Server"))
+                .next()
+            {
+                Some(v) => {
+                    domain.push_str(v);
+                }
+                None => {
+                    domain.push_str("unknown-host");
+                }
+            }
+            if !str_path.starts_with("/") {
+                domain.push('/');
+            }
+            domain.push_str(str_path);
+
+            domain
+        }));
         for (repo, config) in configs {
             for upstream in config.upstreams {
                 let upstream = match upstream {
@@ -91,7 +126,16 @@ pub async fn get_repo_file_impl(repo: &str, path: &Path, str_path: &str, config:
                     Upstream::Remote(v) => v,
                 };
                 if upstreams.insert(upstream.url.clone()) {
-                    js.spawn(serve_remote_repository(upstream, remote_str_path.clone(), repo.clone(), remote_path.clone(), config.stores_remote_upstream, config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE)));
+                    js.spawn(serve_remote_repository(
+                        upstream,
+                        remote_str_path.clone(),
+                        repo.clone(),
+                        remote_path.clone(),
+                        config.stores_remote_upstream,
+                        config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE),
+                        request_url.clone(),
+                        request_headers.client_ip
+                    ));
                 }
             }
         }

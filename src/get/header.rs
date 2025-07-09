@@ -45,7 +45,7 @@ pub async fn header_check(
 
     // Check for If-None-Match header
     let mut contains_none_match = false;
-    for i in request_headers.0.get("If-None-Match") {
+    for i in request_headers.headers.get("If-None-Match") {
         contains_none_match = true;
         let v = match ETagValidator::parse(i) {
             Some(ETagValidator::Any) => {
@@ -82,9 +82,9 @@ pub async fn header_check(
         }
     }
     // Check for If-Match header
-    if request_headers.0.contains("If-Match") {
+    if request_headers.headers.contains("If-Match") {
         let mut any_match = false;
-        for i in request_headers.0.get("If-Match") {
+        for i in request_headers.headers.get("If-Match") {
             let v = match ETagValidator::parse(i) {
                 Some(ETagValidator::Any) => {
                     any_match = true;
@@ -133,9 +133,9 @@ pub async fn header_check(
 
     // Check for If-Unmodified-Since and If-Modified-Since
     if
-    request_headers.0.contains("If-Unmodified-Since") ||
+    request_headers.headers.contains("If-Unmodified-Since") ||
         //When used in combination with If-None-Match, it is ignored - https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
-        (!contains_none_match && request_headers.0.contains("If-Modified-Since"))
+        (!contains_none_match && request_headers.headers.contains("If-Modified-Since"))
     {
         let modification_datetime = match metadata.modified() {
             Ok(v) => v,
@@ -146,7 +146,7 @@ pub async fn header_check(
         };
         let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
         if !contains_none_match {
-            for i in request_headers.0.get("If-Modified-Since") {
+            for i in request_headers.headers.get("If-Modified-Since") {
                 match chrono::DateTime::parse_from_rfc2822(i) {
                     Ok(http_time) => {
                         if http_time > modification_datetime {
@@ -186,7 +186,7 @@ pub async fn header_check(
                 }
             }
         }
-        for i in request_headers.0.get("If-Unmodified-Since") {
+        for i in request_headers.headers.get("If-Unmodified-Since") {
             match chrono::DateTime::parse_from_rfc2822(i) {
                 Ok(http_time) => {
                     if http_time <= modification_datetime {
