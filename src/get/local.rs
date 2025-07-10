@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::fs::FileType;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::time::Instant;
 use crate::err::GetRepoFileError;
+use crate::file_metadata::FileMetadata;
 use crate::get::StoredRepoPath;
+use crate::repository::Repository;
 use crate::server_timings::AsServerTimingDuration;
 
-pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, hash_trailing_slash: bool) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_trailing_slash: bool, config: Arc<Repository>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
     let mut errors = Vec::new();
@@ -25,7 +28,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, hash
             return Err(errors);
         };
     }
-    if hash_trailing_slash {
+    if has_trailing_slash {
         if !display_dir {
             errors.push(GetRepoFileError::NotFound);
         } else {
@@ -60,7 +63,10 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, hash
                 let mut start = start;
                 let mut next;
 
-                let file = std::fs::File::open(&path)?;
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)?;
 
                 next = Instant::now();
                 timings.push(format!(r#"resolveImplLocalOpenFile;dur={};desc="Resolve Impl: Local: Opening File""#, (next-start).as_server_timing_duration()));
@@ -91,7 +97,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, hash
                 timings.push(format!(r#"resolveImplLocalETagFile;dur={};desc="Resolve Impl: Local: Calculate File ETag""#, (next-start).as_server_timing_duration()));
                 core::mem::swap(&mut start, &mut next);
 
-                Ok::<_, std::io::Error>((map, hash, timings, start))
+                Ok::<_, std::io::Error>((map, file, hash, timings, start))
             })
         };
         let metadata = match metadata.await {
@@ -102,12 +108,13 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, hash
                 return Err(errors);
             }
         };
+
         if metadata.is_dir() {
             task.abort();
             return Ok(StoredRepoPath::IsADir);
         }
         
-        let (data, hash, mut timing, mut start) = match task.await {
+        let (mut data, file, hash, mut timing, mut start) = match task.await {
             Ok(Ok(v)) => v,
             Ok(Err(err)) => {
                 handle_err!(err, path);
@@ -121,6 +128,17 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, hash
 
         next = Instant::now();
         timing.push(format!(r#"resolveImplLocalScheduleDelay;dur={};desc="Resolve Impl: Local: Scheduling Delay""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
+
+        let mut file = tokio::fs::File::from_std(file);
+        match FileMetadata::validate(&config, &str_path, &path, &mut data, &mut file, &metadata, hash.as_bytes()).await {
+            Ok(_) => {},
+            Err(err) => {
+                tracing::error!("Failed to get File Metadata for {str_path}: {err:#?}");
+            }
+        }
+        next = Instant::now();
+        timing.push(format!(r#"resolveImplLocalFileMetadataValidate;dur={};desc="Resolve Impl: Local: Validate or Create File Metadata""#, (next-start).as_server_timing_duration()));
         core::mem::swap(&mut start, &mut next);
 
         Ok(StoredRepoPath::Mmap{

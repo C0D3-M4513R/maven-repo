@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::io::SeekFrom;
 use std::net::IpAddr;
 use std::sync::{Arc, LazyLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use rocket::http::{ContentType, Status};
 use rocket::request::Outcome;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -20,6 +20,8 @@ mod maven_metadata;
 mod path_info;
 mod etag;
 mod server_timings;
+mod file_metadata;
+mod remote;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,
@@ -34,6 +36,7 @@ const FORBIDDEN: Return = Return{
     header_map: None,
 };
 const DEFAULT_MAX_FILE_SIZE:u64 = 4*1024*1024*1024;
+const DEFAULT_FRESH:Duration = Duration::from_secs(6*60*60); //6 hours
 
 static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
     let mut map = reqwest::header::HeaderMap::new();

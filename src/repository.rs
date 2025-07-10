@@ -23,6 +23,8 @@ pub struct Repository{
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub infer_content_type_on_file_extension: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_fresh: Option<Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_size: Option<u64>,
     #[serde(alias="cache_control", default, skip_serializing_if = "Vec::is_empty")]
     pub cache_control_file: Vec<Header>,
@@ -44,6 +46,7 @@ impl Default for Repository{
             publicly_readable: None,
             hide_directory_listings: None,
             infer_content_type_on_file_extension: None,
+            time_fresh: None,
             max_file_size: None,
             cache_control_file: Vec::new(),
             cache_control_metadata: Vec::new(),
@@ -110,6 +113,8 @@ impl From<rocket::http::Header<'static>> for Header {
 pub struct RemoteUpstream{
     pub url: String, 
     pub timeout: Duration,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_fresh: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

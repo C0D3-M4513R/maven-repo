@@ -57,9 +57,10 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
         out
     };
 
+    let str_path = Arc::<str>::from(str_path);
     for (repo, repo_config) in &configs {
         let display_dir = !config.hide_directory_listings.unwrap_or(repo_config.hide_directory_listings.unwrap_or(false));
-        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), display_dir, request_headers.has_trailing_slash));
+        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), display_dir, request_headers.has_trailing_slash, repo_config.clone(), str_path.clone()));
     }
 
     if let Some(v) = check_result(&mut js).await {
@@ -92,7 +93,6 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
     //Start requests to upstreams
     {
         let mut upstreams = HashSet::new();
-        let remote_str_path = LazyLock::new(||Arc::<str>::from(str_path));
         let remote_path = LazyLock::new(||Arc::<Path>::from(path));
         let request_url = LazyLock::new(||Arc::<str>::from({
             let mut domain = String::new();
@@ -124,7 +124,7 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
             if !str_path.starts_with("/") {
                 domain.push('/');
             }
-            domain.push_str(str_path);
+            domain.push_str(&str_path);
 
             domain
         }));
@@ -137,11 +137,10 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
                 if upstreams.insert(upstream.url.clone()) {
                     js.spawn(serve_remote_repository(
                         upstream.clone(),
-                        remote_str_path.clone(),
+                        str_path.clone(),
                         repo.clone(),
                         remote_path.clone(),
-                        config.stores_remote_upstream.unwrap_or(true),
-                        config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE),
+                        config.clone(),
                         request_url.clone(),
                         request_headers.client_ip
                     ));

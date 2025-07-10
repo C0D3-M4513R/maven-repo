@@ -6,8 +6,10 @@ use reqwest::StatusCode;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::time::Instant;
 use crate::err::GetRepoFileError;
+use crate::file_metadata::FileMetadata;
 use crate::get::StoredRepoPath;
-use crate::repository::RemoteUpstream;
+use crate::remote::get_remote_request;
+use crate::repository::{RemoteUpstream, Repository};
 use crate::server_timings::AsServerTimingDuration;
 
 pub async fn serve_remote_repository(
@@ -15,8 +17,7 @@ pub async fn serve_remote_repository(
     str_path: Arc<str>,
     repo: String,
     path: Arc<Path>,
-    stores_remote_upstream: bool,
-    limit: u64,
+    config: Arc<Repository>,
     request_url: Arc<str>,
     remote_client: Option<IpAddr>, 
 ) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
@@ -24,12 +25,14 @@ pub async fn serve_remote_repository(
     let mut next;
     let mut timings = Vec::new();
 
-    let url = remote.url;
-    let response = match crate::CLIENT
-        .get(format!("{url}/{str_path}"))
-        .header("X-Downstream-Repo-Link", request_url.as_ref())
-        .header("X-Forwarded-For", remote_client.map(|v|v.to_canonical().to_string()).unwrap_or_else(String::new))
-        .timeout(remote.timeout)
+    let (url, response) = get_remote_request(
+        &remote,
+        &str_path,
+        &request_url,
+        remote_client
+    );
+    let response = match 
+        response
         .send()
         .await {
         Err(err) => {
@@ -48,7 +51,7 @@ pub async fn serve_remote_repository(
         }
     }
 
-    if stores_remote_upstream {
+    if config.stores_remote_upstream.unwrap_or(true) {
         next = Instant::now();
         timings.push(format!(r#"resolveImplRemoteRequestHead;dur={};desc="Resolve Impl: Remote: Send Request to Remote and wait for Headers""#, (next-start).as_server_timing_duration()));
         core::mem::swap(&mut start, &mut next);
@@ -112,7 +115,7 @@ pub async fn serve_remote_repository(
                 Ok(None) => break,
             };
             current_size += body.len() as u64;
-            if current_size >= limit {
+            if current_size >= config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE) {
                 return Err(vec![GetRepoFileError::UpstreamFileTooLarge])
             }
             hash.update(&*body);
@@ -155,6 +158,16 @@ pub async fn serve_remote_repository(
         }
         next = Instant::now();
         timings.push(format!(r#"resolveImplRemoteBodyRead;dur={};desc="Resolve Impl: Remote: Read Remote Response in Chunks to Local File and Hash""#, (next-start).as_server_timing_duration()));
+        core::mem::swap(&mut start, &mut next);
+        
+        match FileMetadata::new_response_write(url, &response, hash.as_bytes(), &path).await {
+            Ok(_) => {},
+            Err(err) => {
+                tracing::error!("Failed to write Metadata for {repo}/{str_path}: {err:#?}");
+            }
+        };
+        next = Instant::now();
+        timings.push(format!(r#"resolveImplRemoteMetadataWrite;dur={};desc="Resolve Impl: Remote: Write File Metadata Info""#, (next-start).as_server_timing_duration()));
         core::mem::swap(&mut start, &mut next);
 
         let file = file.into_std().await;
