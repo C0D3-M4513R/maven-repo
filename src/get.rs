@@ -4,9 +4,9 @@ mod interal_impl;
 mod header;
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::fs::FileType;
 use std::path::{Component, PathBuf};
-use base64::Engine;
 use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
@@ -98,13 +98,33 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
 
     let (metadata, content, hash, mut timing, dir_listing) = match resolve_impl {
         Ok(StoredRepoPath::Mmap{metadata, data, hash, timing}) => (vec![metadata], Content::Mmap(data), hash, timing, false),
+        Ok(StoredRepoPath::IsADir) => {
+            let mut ret = Return {
+                status: Status::PermanentRedirect,
+                content: Content::None,
+                content_type: ContentType::Text,
+                header_map: None,
+            };
+            let header_map = ret.header_map.get_or_insert_default();
+            let mut location = request_headers.path.to_string();
+            if !location.ends_with("/") {
+                location.push('/');
+            }
+            header_map.add_raw("Location", location);
+            return ret;
+        },
         Ok(StoredRepoPath::DirListing{metadata, entries}) => {
-            let out = entries_to_content(&entries, str_path.as_ref(), repo);
+            let out = entries_to_content(&entries);
             let hash = blake3::Hasher::new().update(out.as_bytes()).finalize();
             (metadata, Content::String(out), hash, Vec::new(), true)
         },
         Ok(StoredRepoPath::Upstream(upstream)) => {
-            let mut ret = StoredRepoPath::Upstream(upstream).to_return(str_path.as_ref(), &repo);
+            let mut ret = Return{
+                status: Status::Ok,
+                content: Content::Response(upstream),
+                content_type: ContentType::Binary,
+                header_map: None,
+            };
             let header_map  = ret.header_map.get_or_insert_default();
             header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
             header_map.add(rocket::http::Header::new("Cache-Control", "no-store"));
@@ -150,57 +170,33 @@ enum StoredRepoPath{
         hash: blake3::Hash,
         timing: Vec<String>,
     },
+    IsADir,
     Upstream(reqwest::Response),
     DirListing{
         metadata: Vec<std::fs::Metadata>,
-        entries: HashSet<String>,
+        entries: HashMap<String, FileType>,
     }
 }
-fn entries_to_content(entries: &HashSet<String>, path: &str, repo:&str) -> String {
+fn entries_to_content(entries: &HashMap<String, FileType>) -> String {
     let mut out = r#"<!DOCTYPE HTML><html><head><meta charset="utf-8"><meta name="color-scheme" content="dark light"></head><body><ul>"#.to_owned();
-    let mut v = entries.into_iter().collect::<Vec<_>>();
+    let mut v = entries.iter().map(|(key, value)|{
+        if value.is_dir() {
+            let mut key = key.clone();
+            key.push('/');
+            Cow::Owned(key)
+        } else {
+            Cow::Borrowed(key.as_str())
+        }
+    }).collect::<Vec<_>>();
     v.sort();
-    let repo = repo.strip_prefix("/").unwrap_or(repo);
-    let repo = repo.strip_suffix("/").unwrap_or(repo);
-    let path = path.strip_prefix("/").unwrap_or(path);
-    let path = path.strip_suffix("/").unwrap_or(path);
     for entry in v {
-        out.push_str(&format!(r#"<li><a href="/{repo}/{path}/{entry}">{entry}</a></li>"#));
+        out.push_str(r#"<li><a href=""#);
+        out.push_str(entry.as_ref());
+        out.push_str(r#"">"#);
+        out.push_str(entry.as_ref());
+        out.push_str("</a></li>");
     }
     out.push_str("</ul></body></html>");
 
     out
-}
-impl StoredRepoPath {
-    pub fn to_return(self, path: &str, repo:&str) -> Return {
-        match self {
-            Self::DirListing{entries, ..} => {
-                let out = entries_to_content(&entries, path, repo);
-                Return{
-                    status: Status::Ok,
-                    content: Content::String(out),
-                    content_type: ContentType::HTML,
-                    header_map: None,
-                }
-            },
-            Self::Upstream(v) => Return{
-                status: Status::Ok,
-                content: Content::Response(v),
-                content_type: ContentType::Binary,
-                header_map: None,
-            },
-            Self::Mmap{data, hash, ..} => {
-                let mut header_map = rocket::http::HeaderMap::new();
-                let hash = base64::engine::general_purpose::STANDARD.encode(hash.as_bytes());
-                header_map.add(rocket::http::Header::new("ETag", hash));
-
-                Return{
-                    status: Status::Ok,
-                    content: Content::Mmap(data),
-                    content_type: ContentType::Binary,
-                    header_map: Some(header_map),
-                }
-            }
-        }
-    }
 }

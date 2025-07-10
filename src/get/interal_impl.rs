@@ -27,6 +27,10 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
             match task {
                 Ok(Ok(v)) => {
                     out = match (out, v) {
+                        (_, StoredRepoPath::IsADir) =>  {
+                            js.abort_all();
+                            return Some(StoredRepoPath::IsADir);
+                        }
                         (Some(StoredRepoPath::DirListing{mut metadata, mut entries}), StoredRepoPath::DirListing{metadata: mut metadata_1, entries: entries_1}) => {
                             entries.extend(entries_1);
                             metadata.append(&mut metadata_1);
@@ -55,7 +59,7 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
 
     for (repo, repo_config) in &configs {
         let display_dir = !config.hide_directory_listings.unwrap_or(repo_config.hide_directory_listings.unwrap_or(false));
-        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), display_dir));
+        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), display_dir, request_headers.has_trailing_slash));
     }
 
     if let Some(v) = check_result(&mut js).await {
@@ -78,6 +82,10 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
         _ => false,
     }) {
         errors.push(GetRepoFileError::FileStartsWithDot);
+        return Err(errors);
+    }
+    if request_headers.has_trailing_slash {
+        errors.push(GetRepoFileError::NotFound);
         return Err(errors);
     }
 

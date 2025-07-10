@@ -15,6 +15,7 @@ pub enum GetRepoFileError{
     ReadDirectory,
     ReadDirectoryEntry,
     ReadDirectoryEntryNonUTF8Name,
+    ReadDirectoryEntryFileType,
 
     Panicked,
 
@@ -57,6 +58,7 @@ impl GetRepoFileError {
             Self::ReadDirectory => "Error whist reading directory",
             Self::ReadDirectoryEntry => "Error whist reading directory entries",
             Self::ReadDirectoryEntryNonUTF8Name => "Error: directory contains entries with non UTF-8 names",
+            Self::ReadDirectoryEntryFileType => "Error: failed to get the file-type of the directory entry",
             Self::Panicked => "Error: implementation panicked",
             Self::InvalidUTF8 => "Error: request path included invalid utf-8 characters",
             Self::BadRequestPath => "Error: Request Path failed sanity checks",
@@ -95,6 +97,7 @@ impl GetRepoFileError {
             Self::ReadDirectory =>                  &[Status::InternalServerError],
             Self::ReadDirectoryEntry =>             &[Status::InternalServerError],
             Self::ReadDirectoryEntryNonUTF8Name =>  &[Status::BadRequest, Status::InternalServerError],
+            Self::ReadDirectoryEntryFileType =>     &[Status::BadRequest, Status::InternalServerError],
             Self::Panicked =>                       &[Status::InternalServerError],
             Self::InvalidUTF8 =>                    &[Status::BadRequest, Status::InternalServerError],
             Self::BadRequestPath =>                 &[Status::BadRequest, Status::InternalServerError],

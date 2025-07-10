@@ -139,6 +139,7 @@ impl Repository {
                 Some(v) => v,
                 None => return Err(crate::UNAUTHORIZED),
             };
+            //Todo: this won't work with subdirs
             let path = match token.paths.get(path) {
                 None => return Err(crate::UNAUTHORIZED),
                 Some(v) => v,

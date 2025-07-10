@@ -198,7 +198,9 @@ impl rocket::fairing::Fairing for AddSourceLink {
 }
 struct RequestHeaders<'a> {
     pub headers: &'a rocket::http::HeaderMap<'a>,
-    pub client_ip: Option<IpAddr>
+    pub client_ip: Option<IpAddr>,
+    pub has_trailing_slash: bool,
+    pub path: rocket::http::uri::Origin<'a>,
 }
 #[rocket::async_trait]
 impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
@@ -208,6 +210,8 @@ impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
         Outcome::Success(Self{
             headers: request.headers(),
             client_ip: request.client_ip(),
+            has_trailing_slash: request.uri().path().ends_with("/"),
+            path: request.uri().clone(),
         })
     }
 }
