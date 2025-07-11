@@ -199,24 +199,8 @@ impl FileMetadata {
                 tracing::info!("Got a newer file for {url}");
                 #[cfg(feature = "locking")]
                 {
-                    //Todo: This is hacky, to work around not being able to call lock on tokio's File.
-                    // I don't use the rust BorrowedFD -> OwnedFD, since that duplicates the file handle,
-                    // which might interact weirdly on non-linux platforms (it should be fine on specifically linux with the systemcalls being made).
-                    // This should be replaced, once there is a tokio lock call available.
-                    //
-                    //Specifically use block_in_place here, instead of spawn_blocking,
-                    // so that we know that there is no possible way for the tokio File to be dropped.
-                    tokio::task::block_in_place(||{
-                        use std::os::fd::{AsFd, AsRawFd, FromRawFd};
-                        //Create a std File object from the file-descriptor of the tokio File-Object.
-                        
-                        let file = unsafe { core::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(file.as_fd().as_raw_fd())) };
-                        //Re-Lock the file exclusively.
-                        file.unlock()?;
-                        file.lock()?;
-                        Ok::<_, std::io::Error>(())
-                    }).map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
-
+                    use crate::file_ext::TokioFileExt;
+                    file.relock().await.map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
                 }
 
                 file.set_len(0).await.map_err(|err|anyhow::Error::from(err).context("Failed to set the original file length"))?;
@@ -227,23 +211,8 @@ impl FileMetadata {
 
                 #[cfg(feature = "locking")]
                 {
-                    //Todo: This is hacky, to work around not being able to call lock on tokio's File.
-                    // I don't use the rust BorrowedFD -> OwnedFD, since that duplicates the file handle,
-                    // which might interact weirdly on non-linux platforms (it should be fine on specifically linux with the systemcalls being made).
-                    // This should be replaced, once there is a tokio lock call available.
-                    //
-                    //Specifically use block_in_place here, instead of spawn_blocking,
-                    // so that we know that there is no possible way for the tokio File to be dropped.
-                    tokio::task::block_in_place(||{
-                        use std::os::fd::{AsFd, AsRawFd, FromRawFd};
-                        //Create a std File object from the file-descriptor of the tokio File-Object.
-                        let file = unsafe { core::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(file.as_fd().as_raw_fd())) };
-                        //Re-Lock the file shared
-                        file.unlock()?;
-                        file.lock_shared()?;
-                        Ok::<_, std::io::Error>(())
-                    }).map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
-
+                    use crate::file_ext::TokioFileExt;
+                    file.relock_shared().await.map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
                 }
             } else {
                 tracing::info!("File unchanged for {url}");

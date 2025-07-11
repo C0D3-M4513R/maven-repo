@@ -22,6 +22,7 @@ mod etag;
 mod server_timings;
 mod file_metadata;
 mod remote;
+mod file_ext;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,
