@@ -21,6 +21,11 @@ use remote::serve_remote_repository;
 use header::header_check;
 use interal_impl::resolve_impl;
 
+#[rocket::head("/<repo>/<path..>")]
+pub async fn head_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
+    get_repo_file(repo, path, auth, request_headers, rocket_config).await
+}
+
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
     let mut timings = Vec::new();
