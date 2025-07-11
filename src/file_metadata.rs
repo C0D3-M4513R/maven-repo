@@ -207,7 +207,7 @@ impl FileMetadata {
                     //Specifically use block_in_place here, instead of spawn_blocking,
                     // so that we know that there is no possible way for the tokio File to be dropped.
                     tokio::task::block_in_place(||{
-                        use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd};
+                        use std::os::fd::{AsFd, AsRawFd, FromRawFd};
                         //Create a std File object from the file-descriptor of the tokio File-Object.
                         
                         let file = unsafe { core::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(file.as_fd().as_raw_fd())) };
@@ -235,7 +235,7 @@ impl FileMetadata {
                     //Specifically use block_in_place here, instead of spawn_blocking,
                     // so that we know that there is no possible way for the tokio File to be dropped.
                     tokio::task::block_in_place(||{
-                        use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd};
+                        use std::os::fd::{AsFd, AsRawFd, FromRawFd};
                         //Create a std File object from the file-descriptor of the tokio File-Object.
                         let file = unsafe { core::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(file.as_fd().as_raw_fd())) };
                         //Re-Lock the file shared
