@@ -187,12 +187,10 @@ impl FileMetadata {
             hash: &[u8; blake3::OUT_LEN],
             mem: &mut memmap2::Mmap,
             file: &mut tokio::fs::File,
-            js: &mut JoinSet<anyhow::Result<Ret>>
         ) -> anyhow::Result<FileMetadata> {
             let (url, resp, bytes, new_hash) = match task {
                 Ok(v) => v,
                 Err(err) => {
-                    js.abort_all();
                     return Err(anyhow::Error::from(err).context("Failed to read from remote"));
                 },
             };
@@ -278,7 +276,7 @@ impl FileMetadata {
                 };
                 if self_.url.starts_with(&i.url) {
                     tracing::info!("Requesting {} for {str_path} metadata creation", self_.url);
-                    match check_task(read_remote(self_.url.clone(), i.timeout, headers.clone()).await, hash, mem, file, &mut js).await {
+                    match check_task(read_remote(self_.url.clone(), i.timeout, headers.clone()).await, hash, mem, file).await {
                         Ok(mut v) => {
                             v.local_last_modified = core::cmp::max(self_.local_last_modified, v.local_last_modified);
                             v.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;
@@ -329,7 +327,7 @@ impl FileMetadata {
                     continue;
                 },
             };
-            match check_task(task, hash, mem, file, &mut js).await {
+            match check_task(task, hash, mem, file).await {
                 Ok(v) => {
                     v.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;
                     return Ok(Some(v))
