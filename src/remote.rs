@@ -9,8 +9,23 @@ pub fn get_remote_request(
     request_url: &str,
     remote_client: Option<IpAddr>,
 ) -> (String, reqwest::RequestBuilder) {
-    let url = &remote.url;
-    let url = format!("{url}/{str_path}");
+    let mut url = remote.url.clone();
+    match str_path.strip_prefix("/") {
+        Some(v) => {
+            if url.ends_with("/") {
+                url.push_str(v);
+            }else {
+                url.push_str(str_path);
+            }
+        }
+        None => {
+            if !url.ends_with("/") {
+                url.push('/');
+            }
+            url.push_str(str_path);
+        }
+    }
+    let url = url;
     let mut req = crate::CLIENT
         .get(&url)
         .timeout(remote.timeout);
