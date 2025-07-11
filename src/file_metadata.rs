@@ -209,17 +209,11 @@ impl FileMetadata {
                     tokio::task::block_in_place(||{
                         use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd};
                         //Create a std File object from the file-descriptor of the tokio File-Object.
-                        let file = unsafe { std::fs::File::from_raw_fd(file.as_fd().as_raw_fd()) };
+                        
+                        let file = unsafe { core::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(file.as_fd().as_raw_fd())) };
                         //Re-Lock the file exclusively.
                         file.unlock()?;
                         file.lock()?;
-                        //Destructure the file back into it's Raw File-Descriptor,
-                        // to prevent the std File object being dropped and closing the file-handle.
-                        //
-                        //It's our job to clean up this file-handle,
-                        // but since tokio's File-Object still has the same underlying file-descriptor,
-                        // it will do the cleanup for us on drop.
-                        let _ = file.into_raw_fd();
                         Ok::<_, std::io::Error>(())
                     }).map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
 
@@ -243,17 +237,10 @@ impl FileMetadata {
                     tokio::task::block_in_place(||{
                         use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd};
                         //Create a std File object from the file-descriptor of the tokio File-Object.
-                        let file = unsafe { std::fs::File::from_raw_fd(file.as_fd().as_raw_fd()) };
+                        let file = unsafe { core::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(file.as_fd().as_raw_fd())) };
                         //Re-Lock the file shared
                         file.unlock()?;
                         file.lock_shared()?;
-                        //Destructure the file back into it's Raw File-Descriptor,
-                        // to prevent the std File object being dropped and closing the file-handle.
-                        //
-                        //It's our job to clean up this file-handle,
-                        // but since tokio's File-Object still has the same underlying file-descriptor,
-                        // it will do the cleanup for us on drop.
-                        let _ = file.into_raw_fd();
                         Ok::<_, std::io::Error>(())
                     }).map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
 
