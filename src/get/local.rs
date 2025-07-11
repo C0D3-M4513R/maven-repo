@@ -56,6 +56,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
 
 
         let metadata = tokio::fs::metadata(path.clone());
+        let path = Arc::<std::path::Path>::from(path);
         let task = {
             let path = path.clone();
             tokio::task::spawn_blocking(move ||{
