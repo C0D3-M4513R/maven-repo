@@ -156,6 +156,12 @@ pub async fn read_remotes<'a, T: Deref<Target = str> + Send + 'a>(
                             errors.push(err);
                             return Err(errors);
                         }
+                    };
+                    match mem.advise(memmap2::Advice::Sequential){
+                        Ok(()) => {},
+                        Err(err) => {
+                            errors.push(anyhow::Error::from(err).context("Failed to advice memmap for sqeuential reads"));
+                        }
                     }
                 } else {
                     if let Some(new_hash) = new_hash
