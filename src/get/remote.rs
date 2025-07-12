@@ -20,7 +20,7 @@ pub async fn serve_remote_repository(
     path: Arc<Path>,
     config: Arc<Repository>,
     request_url: Arc<str>,
-    remote_client: Option<IpAddr>, 
+    remote_client: Option<IpAddr>,
 ) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
@@ -32,7 +32,7 @@ pub async fn serve_remote_repository(
         &request_url,
         remote_client
     );
-    let response = match 
+    let response = match
         response
         .send()
         .await {
@@ -160,8 +160,8 @@ pub async fn serve_remote_repository(
         next = Instant::now();
         timings.push_iter_nodelim([r#"resolveImplRemoteBodyRead;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Read Remote Response in Chunks to Local File and Hash""#]);
         core::mem::swap(&mut start, &mut next);
-        
-        match FileMetadata::new_response_write(url, &response, hash.as_bytes(), &path).await {
+
+        match FileMetadata::new_response_write(url.into_boxed_str(), &response, hash.as_bytes(), &path).await {
             Ok(_) => {},
             Err(err) => {
                 tracing::error!("Failed to write Metadata for {repo}/{str_path}: {err:#?}");

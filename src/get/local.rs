@@ -141,7 +141,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
         core::mem::swap(&mut start, &mut next);
 
         let mut file = tokio::fs::File::from_std(file);
-        match FileMetadata::validate(&config, &str_path, &path, &mut data, &mut file, &metadata, hash.as_bytes()).await {
+        match FileMetadata::validate(&config, &str_path, &path, &mut data, &mut file, &metadata, &hash).await {
             Ok(_) => {},
             Err(err) => {
                 tracing::error!("Failed to get File Metadata for {str_path}: {err:#?}");

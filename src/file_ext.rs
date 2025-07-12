@@ -42,6 +42,7 @@ impl FileExt for std::fs::File {
         Ok(())
     }
 }
+#[allow(private_bounds, dead_code)]
 pub trait TokioFileExt: Sealed {
     forward!(def; unlock, ());
     forward!(def; lock, ());

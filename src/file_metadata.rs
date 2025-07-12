@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{ErrorKind, Read, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use reqwest::{Response, StatusCode};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::task::JoinSet;
-use crate::remote::{read_remote};
+use reqwest::{Response};
+use crate::remote::{get_remote_url, read_remotes};
 use crate::repository::{RemoteUpstream, Repository, Upstream};
 
 #[derive(Debug, Clone, serde_derive::Deserialize, serde_derive::Serialize, Eq, PartialEq)]
@@ -32,7 +30,7 @@ impl FileMetadata {
             map
         });
     }
-    pub fn new_response(url: String, request: &'_ Response, hash: &[u8; blake3::OUT_LEN]) -> Self {
+    pub fn new_response(url: Box<str>, request: &'_ Response, hash: &[u8; blake3::OUT_LEN]) -> Self {
         let request_date = request.headers()
             .get("Date")
             .and_then(|v|v.to_str().ok())
@@ -46,7 +44,7 @@ impl FileMetadata {
             .map(|v|v.into())
             .unwrap_or(request_date);
         let mut ret = Self{
-            url: url.into_boxed_str(),
+            url,
             header_map: HashMap::new(),
             local_last_modified: request_last_modified,
             local_last_checked: request_date,
@@ -56,14 +54,22 @@ impl FileMetadata {
         ret
     }
 
-    pub async fn new_response_write(url: String, request: &'_ Response, hash: &[u8; blake3::OUT_LEN], path: &Path) -> Result<Self, std::io::Error> {
+    pub async fn new_response_write(url: Box<str>, request: &'_ Response, hash: &[u8; blake3::OUT_LEN], path: &Path) -> Result<Self, std::io::Error> {
         let ret = Self::new_response(url, request, hash);
         ret.write(path).await?;
         Ok(ret)
     }
 
     #[inline]
-    pub async fn validate(config: &Repository, str_path: &str, path: &Path, mem: &mut memmap2::Mmap, file: &mut tokio::fs::File, metadata: &std::fs::Metadata, hash: &[u8; blake3::OUT_LEN]) -> Result<Option<Self>, Vec<anyhow::Error>> {
+    pub async fn validate(
+        config: &Repository,
+        str_path: &str,
+        path: &Path,
+        mem: &mut memmap2::Mmap,
+        file: &mut tokio::fs::File,
+        metadata: &std::fs::Metadata,
+        hash: &blake3::Hash
+    ) -> Result<Option<Self>, Vec<anyhow::Error>> {
         let self_ = match Self::open(path).await {
             Ok(v) => {
                 let upstream = v.get_upstream(config);
@@ -170,80 +176,37 @@ impl FileMetadata {
         Ok(path)
     }
 
-    async fn new_file_impl(
+    async fn new_file_impl<'a>(
         self_: Option<Self>,
         config: &Repository,
         str_path: &str,
         path: &Path,
-        mem: &mut memmap2::Mmap,
+        mem: &'a mut memmap2::Mmap,
         file: &mut tokio::fs::File,
         metadata: &std::fs::Metadata,
-        hash: &[u8; blake3::OUT_LEN],
+        hash: &blake3::Hash,
     ) -> Result<Option<Self>, Vec<anyhow::Error>> {
         let mut errors = Vec::new();
-        type Ret = (String, Response, Vec<u8>, blake3::Hash);
-        async fn check_task(
-            task: anyhow::Result<Ret>,
-            hash: &[u8; blake3::OUT_LEN],
-            mem: &mut memmap2::Mmap,
-            file: &mut tokio::fs::File,
-        ) -> anyhow::Result<FileMetadata> {
-            let (url, resp, bytes, new_hash) = match task {
-                Ok(v) => v,
-                Err(err) => {
-                    return Err(anyhow::Error::from(err).context("Failed to read from remote"));
-                },
-            };
-
-            if resp.status() != StatusCode::NOT_MODIFIED && hash != new_hash.as_bytes() && (mem.len() != bytes.len() || mem.as_ref() != bytes.as_slice()) {
-                tracing::info!("Got a newer file for {url}");
-                #[cfg(feature = "locking")]
-                {
-                    use crate::file_ext::TokioFileExt;
-                    file.relock().await.map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
-                }
-
-                file.set_len(0).await.map_err(|err|anyhow::Error::from(err).context("Failed to set the original file length"))?;
-                file.seek(SeekFrom::Start(0)).await.map_err(|err|anyhow::Error::from(err).context("Failed to seek the original file"))?;
-                file.write_all(bytes.as_slice()).await.map_err(|err|anyhow::Error::from(err).context("Failed to write to the original file"))?;
-                file.sync_all().await.map_err(|err|anyhow::Error::from(err).context("Failed to sync file (meta)data"))?;
-                *mem = unsafe{memmap2::Mmap::map(&*file)}.map_err(|err|anyhow::Error::from(err).context("Failed to memmap file"))?;
-
-                #[cfg(feature = "locking")]
-                {
-                    use crate::file_ext::TokioFileExt;
-                    file.relock_shared().await.map_err(|err|anyhow::Error::from(err).context("Failed to lock the file"))?;
-                }
-            } else {
-                tracing::info!("File unchanged for {url}");
-            }
-            drop(bytes);
-
-            let meta = FileMetadata::new_response(url, &resp, new_hash.as_bytes());
-            Ok(meta)
-        }
-        let mut js = JoinSet::new();
-        let mut header_map = if let Some(self_) = self_ {
+        let mut headers = if let Some(self_) = self_ {
             let headers = self_.get_request_headers();
-            for i in &config.upstreams {
-                let i = match i {
-                    Upstream::Remote(v) => v,
-                    _ => continue,
-                };
-                if self_.url.starts_with(&i.url) {
-                    tracing::info!("Requesting {} for {str_path} metadata creation", self_.url);
-                    match check_task(read_remote(self_.url.as_ref().to_owned(), i.timeout, headers.clone()).await, hash, mem, file).await {
-                        Ok(mut v) => {
-                            v.local_last_modified = core::cmp::max(self_.local_last_modified, v.local_last_modified);
-                            v.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;
-                            return Ok(Some(v))
-                        },
-                        Err(err) => {
-                            errors.push(err);
-                        }
-                    }
+            let urls = config.upstreams.iter().flat_map(|v|match v {
+                    Upstream::Remote(v) => Some(v),
+                    _ => None
+                }).filter(|v|self_.url.starts_with(&v.url))
+                .map(|v|(v.timeout, &*self_.url));
+            let remote_responses = read_remotes(urls, str_path, headers.clone(), mem, file, hash).await;
+            match remote_responses {
+                Err(mut err) => {
+                    errors.append(&mut err);
+                },
+                Ok((url, resp, new_hash)) => {
+                    let mut meta = FileMetadata::new_response(Box::from(url), &resp, new_hash.unwrap_or(*hash).as_bytes());
+                    meta.local_last_modified = core::cmp::max(self_.local_last_modified, meta.local_last_modified);
+                    meta.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;
+                    return Ok(Some(meta));
                 }
             }
+            
             headers
         } else {
             reqwest::header::HeaderMap::new()
@@ -253,7 +216,7 @@ impl FileMetadata {
                 let date = chrono::DateTime::<chrono::Utc>::from(v).to_rfc2822();
                 match reqwest::header::HeaderValue::from_str(date.as_str()) {
                     Ok(v)  => {
-                        header_map.insert("If-Modified-Since", v);
+                        headers.insert("If-Modified-Since", v);
                     },
                     Err(err) => {
                         tracing::warn!("Error whilst converting RFC2822 Timestamp to Header value for If-Modified-Since header: {err}");
@@ -265,32 +228,23 @@ impl FileMetadata {
             }
         }
 
-        for upstream in &config.upstreams{
-            let upstream = match upstream{
-                Upstream::Remote(v) => v,
-                _ => continue,
-            };
-            let url = format!("{}/{str_path}", upstream.url);
+        let urls = config.upstreams.iter().flat_map(|v|match v {
+            Upstream::Remote(v) => Some(v),
+            _ => None
+        }).map(|v|{
+            let url = get_remote_url(&v.url, str_path);
             tracing::info!("Requesting {url} for {str_path} metadata creation");
-            js.spawn(read_remote(url, upstream.timeout, header_map.clone()));
-        }
-
-        while let Some(task) = js.join_next().await {
-            let task = match task {
-                Ok(v) => v,
-                Err(err) => {
-                    errors.push(anyhow::Error::from(err).context("Failed to request for metadata"));
-                    continue;
-                },
-            };
-            match check_task(task, hash, mem, file).await {
-                Ok(v) => {
-                    v.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;
-                    return Ok(Some(v))
-                },
-                Err(err) => {
-                    errors.push(err);
-                }
+            (v.timeout, url)
+        });
+        let remote_responses = read_remotes(urls, str_path, headers.clone(), mem, file, hash).await;
+        match remote_responses {
+            Err(mut err) => {
+                errors.append(&mut err);
+            },
+            Ok((url, resp, new_hash)) => {
+                let meta = FileMetadata::new_response(url.into_boxed_str(), &resp, new_hash.unwrap_or(*hash).as_bytes());
+                meta.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;
+                return Ok(Some(meta));
             }
         }
 
