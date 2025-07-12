@@ -11,8 +11,8 @@ use crate::repository::{RemoteUpstream, Repository, Upstream};
 #[derive(Debug, Clone, serde_derive::Deserialize, serde_derive::Serialize, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct FileMetadata {
-    pub url: String,
-    pub header_map: HashMap<String, Vec<String>>,
+    pub url: Box<str>,
+    pub header_map: HashMap<Box<str>, smallvec::SmallVec<[Box<str>;1]>>,
     pub local_last_modified: chrono::DateTime<chrono::Utc>,
     pub local_last_checked: chrono::DateTime<chrono::Utc>,
     pub hash: [u8; blake3::OUT_LEN],
@@ -23,7 +23,7 @@ impl FileMetadata {
         self.header_map = headers.iter().fold(HashMap::new(), |mut map, (name, value)|{
             match str::from_utf8(value.as_bytes()) {
                 Ok(v) => {
-                    map.entry(name.to_string().to_lowercase()).or_default().push(v.to_string())
+                    map.entry(name.to_string().to_lowercase().into_boxed_str()).or_default().push(v.into())
                 },
                 Err(err) => {
                     tracing::error!("Upstream sent a non-UTF8 header: {err}");
@@ -46,7 +46,7 @@ impl FileMetadata {
             .map(|v|v.into())
             .unwrap_or(request_date);
         let mut ret = Self{
-            url,
+            url: url.into_boxed_str(),
             header_map: HashMap::new(),
             local_last_modified: request_last_modified,
             local_last_checked: request_date,
@@ -95,14 +95,14 @@ impl FileMetadata {
     }
 
 
-    pub fn get_upstream(&self, config: &Repository) -> Option<RemoteUpstream> {
+    pub fn get_upstream<'a>(&self, config: &'a Repository) -> Option<&'a RemoteUpstream> {
         for i in &config.upstreams {
             let i = match i {
                 Upstream::Remote(i) => i,
                 _ => continue,
             };
             if self.url.starts_with(&i.url) {
-                return Some(i.clone());
+                return Some(i);
             }
         }
         None
@@ -232,7 +232,7 @@ impl FileMetadata {
                 };
                 if self_.url.starts_with(&i.url) {
                     tracing::info!("Requesting {} for {str_path} metadata creation", self_.url);
-                    match check_task(read_remote(self_.url.clone(), i.timeout, headers.clone()).await, hash, mem, file).await {
+                    match check_task(read_remote(self_.url.as_ref().to_owned(), i.timeout, headers.clone()).await, hash, mem, file).await {
                         Ok(mut v) => {
                             v.local_last_modified = core::cmp::max(self_.local_last_modified, v.local_last_modified);
                             v.write(path).await.map_err(|err|vec![anyhow::Error::from(err).context("Failed to write file")])?;

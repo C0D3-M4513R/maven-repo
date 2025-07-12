@@ -20,6 +20,7 @@ use local::serve_repository_stored_path;
 use remote::serve_remote_repository;
 use header::header_check;
 use interal_impl::resolve_impl;
+use crate::timings::ServerTimings;
 
 #[rocket::head("/<repo>/<path..>")]
 pub async fn head_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
@@ -28,7 +29,7 @@ pub async fn head_repo_file(repo: &str, path: PathBuf, auth: Option<Result<Basic
 
 #[rocket::get("/<repo>/<path..>")]
 pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
-    let mut timings = Vec::new();
+    let mut timings = ServerTimings::new();
     let mut start = Instant::now();
     let mut next;
     let mut header_map = HeaderMap::new();
@@ -36,7 +37,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let auth = match auth {
         Some(Err(err)) => return err,
         Some(Ok(v)) => {
-            timings.push(format!(r#"parseAuthenticationHeader;dur={};desc="Parseing HTTP Authentication Header""#, v.duration.as_server_timing_duration()));
+            timings.push_iter_nodelim([r#"parseAuthenticationHeader;dur="#, v.duration.as_server_timing_duration().to_string().as_str(), r#";desc="Parseing HTTP Authentication Header""#]);
             Some(v)
         },
         None => None,
@@ -62,7 +63,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
     next = Instant::now();
-    timings.push(format!(r#"verifyPathValid;dur={};desc="Verify Path to not contain any malicious items""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"verifyPathValid;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Verify Path to not contain any malicious items""#]);
     tracing::info!("get_repo_file: {repo}: path checks took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
@@ -70,12 +71,12 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(v) => v,
         Err(e) => {
             let mut ret = e.to_return();
-            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.value));
             return ret;
         },
     };
     next = Instant::now();
-    timings.push(format!(r#"getMainConfig;dur={};desc="Get Repo Config""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"getMainConfig;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Get Repo Config""#]);
     tracing::info!("get_repo_file: {repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
@@ -91,13 +92,13 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(false) => {},
     }
     next = Instant::now();
-    timings.push(format!(r#"verifyAuth;dur={};desc="Verify Authentication Information""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"verifyAuth;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Verify Authentication Information""#]);
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
     let resolve_impl = resolve_impl(repo, path.as_path(), str_path, &config, &mut timings, &request_headers, rocket_config).await;
     next = Instant::now();
-    timings.push(format!(r#"resolveImpl;dur={};desc="Total Resolve Implementation""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"resolveImpl;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Total Resolve Implementation""#]);
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
@@ -121,7 +122,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(StoredRepoPath::DirListing{metadata, entries}) => {
             let out = entries_to_content(&entries);
             let hash = blake3::Hasher::new().update(out.as_bytes()).finalize();
-            (metadata, Content::String(out), hash, Vec::new(), true)
+            (metadata, Content::String(out), hash, ServerTimings::new(), true)
         },
         Ok(StoredRepoPath::Upstream(upstream)) => {
             let mut ret = Return{
@@ -131,7 +132,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 header_map: None,
             };
             let header_map  = ret.header_map.get_or_insert_default();
-            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
             header_map.add(rocket::http::Header::new("Cache-Control", "no-store"));
             config.apply_cache_control(&mut ret);
             return ret;
@@ -157,14 +158,14 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 content_type: ContentType::Text,
                 header_map: Default::default(),
             };
-            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.value));
             config.apply_cache_control(&mut ret);
             return ret;
         }
     };
     timings.append(&mut timing);
 
-    let mut ret = header_check(repo, &path, &config, str_path, &mut timings, content, dir_listing, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
+    let mut ret = header_check(repo, &path, &config, str_path, timings, content, dir_listing, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
     config.apply_cache_control(&mut ret);
     ret
 }
@@ -173,7 +174,7 @@ enum StoredRepoPath{
         metadata: std::fs::Metadata,
         data: memmap2::Mmap,
         hash: blake3::Hash,
-        timing: Vec<String>,
+        timing: ServerTimings,
     },
     IsADir,
     Upstream(reqwest::Response),

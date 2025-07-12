@@ -8,13 +8,14 @@ use crate::repository::Repository;
 use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
 use crate::status::{Content, Return};
+use crate::timings::ServerTimings;
 
 pub async fn header_check(
     repo: &str,
     path: &Path,
     config: &Repository,
     str_path: &str,
-    timings: &mut Vec<String>,
+    mut timings: ServerTimings,
     mut content: Content,
     dir_listing: bool,
     request_headers: &RequestHeaders<'_>,
@@ -94,12 +95,12 @@ pub async fn header_check(
             Some(ETagValidator::Tags(v)) => v,
             None => {
                 *next = Instant::now();
-                timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                 core::mem::swap(start, next);
 
                 header_map.remove_all();
-                header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+                header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
                 return Return {
                     status: Status::BadRequest,
@@ -131,12 +132,12 @@ pub async fn header_check(
                 Some(ETagValidator::Tags(v)) => v,
                 None => {
                     *next = Instant::now();
-                    timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                    timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                     core::mem::swap(start, next);
 
                     header_map.remove_all();
-                    header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+                    header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
                     return Return {
                         status: Status::BadRequest,
@@ -157,7 +158,7 @@ pub async fn header_check(
         }
         if !any_match {
             header_map.remove_all();
-            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
             return Return{
                 status: Status::PreconditionFailed,
@@ -185,11 +186,11 @@ pub async fn header_check(
                                 status = Status::NotModified;
 
                                 *next = Instant::now();
-                                timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                                timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                                 core::mem::swap(start, next);
 
-                                header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+                                header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
                                 return Return{
                                     status,
@@ -201,12 +202,12 @@ pub async fn header_check(
                         },
                         Err(err) => {
                             *next = Instant::now();
-                            timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                            timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
 
                             header_map.remove_all();
-                            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+                            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
                             return Return{
                                 status: Status::BadRequest,
@@ -225,10 +226,10 @@ pub async fn header_check(
                             status = Status::PreconditionFailed;
 
                             *next = Instant::now();
-                            timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                            timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
-                            header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+                            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
                             return Return{
                                 status,
@@ -240,11 +241,11 @@ pub async fn header_check(
                     },
                     Err(err) => {
                         *next = Instant::now();
-                        timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+                        timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                         core::mem::swap(start, next);
                         header_map.remove_all();
-                        header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+                        header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
                         return Return{
                             status: Status::BadRequest,
@@ -265,11 +266,11 @@ pub async fn header_check(
         }
     }
     *next = Instant::now();
-    timings.push(format!(r#"condHeader;dur={};desc="Parsing,Validation and Evaluation of conditional request Headers""#, (*next-*start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
     core::mem::swap(start, next);
 
-    header_map.add(rocket::http::Header::new("Server-Timing", timings.join(",")));
+    header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
 
     Return {
         status,

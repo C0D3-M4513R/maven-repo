@@ -9,12 +9,13 @@ use crate::file_metadata::FileMetadata;
 use crate::get::StoredRepoPath;
 use crate::repository::Repository;
 use crate::server_timings::AsServerTimingDuration;
+use crate::timings::ServerTimings;
 
 pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_trailing_slash: bool, config: Arc<Repository>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
     let mut errors = Vec::new();
-    let mut timing = Vec::new();
+    let mut timing = ServerTimings::new();
 
     macro_rules! handle_err {
         ($err:ident, $path:ident) => {
@@ -51,16 +52,19 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
         Err(errors)
     } else {
         next = Instant::now();
-        timing.push(format!(r#"resolveImplLocalFSMetadata;dur={};desc="Resolve Impl: Local: Query File Metadata""#, (next-start).as_server_timing_duration()));
+        timing.push_iter_nodelim([r#"resolveImplLocalFSMetadata;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Query File Metadata""#]);
         core::mem::swap(&mut start, &mut next);
 
 
-        let metadata = tokio::fs::metadata(path.clone());
         let path = Arc::<std::path::Path>::from(path);
+        let metadata = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move ||std::fs::metadata(path))
+        };
         let task = {
             let path = path.clone();
             tokio::task::spawn_blocking(move ||{
-                let mut timings = Vec::new();
+                let mut timings = timing;
                 let mut start = start;
                 let mut next;
 
@@ -70,7 +74,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
                     .open(&path)?;
 
                 next = Instant::now();
-                timings.push(format!(r#"resolveImplLocalOpenFile;dur={};desc="Resolve Impl: Local: Opening File""#, (next-start).as_server_timing_duration()));
+                timings.push_iter_nodelim([r#"resolveImplLocalOpenFile;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Opening File""#]);
                 core::mem::swap(&mut start, &mut next);
 
                 #[cfg(feature = "locking")]
@@ -78,7 +82,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
                     file.lock_shared()?;
 
                     next = Instant::now();
-                    timings.push(format!(r#"resolveImplLocalSharedFileLock;dur={};desc="Resolve Impl: Local: Aquiring Shared File Lock""#, (next-start).as_server_timing_duration()));
+                    timings.push_iter_nodelim([r#"resolveImplLocalSharedFileLock;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Aquiring Shared File Lock""#]);
                     core::mem::swap(&mut start, &mut next);
                 }
 
@@ -90,21 +94,26 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
                     map.advise(memmap2::Advice::PopulateRead)?;
                 }
                 next = Instant::now();
-                timings.push(format!(r#"resolveImplLocalMemMapFile;dur={};desc="Resolve Impl: Local: Memory Map file""#, (next-start).as_server_timing_duration()));
+                timings.push_iter_nodelim([r#"resolveImplLocalMemMapFile;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Memory Map file""#]);
                 core::mem::swap(&mut start, &mut next);
 
                 let hash = blake3::Hasher::default().update(&*map).finalize();
                 next = Instant::now();
-                timings.push(format!(r#"resolveImplLocalETagFile;dur={};desc="Resolve Impl: Local: Calculate File ETag""#, (next-start).as_server_timing_duration()));
+                timings.push_iter_nodelim([r#"resolveImplLocalETagFile;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Calculate File ETag""#]);
                 core::mem::swap(&mut start, &mut next);
 
                 Ok::<_, std::io::Error>((map, file, hash, timings, start))
             })
         };
         let metadata = match metadata.await {
-            Ok(v) => v,
-            Err(err) => {
+            Ok(Ok(v)) => v,
+            Ok(Err(err)) => {
                 tracing::warn!("Error opening metadata {}: {err}", path.display());
+                errors.push(GetRepoFileError::OpenFile);
+                return Err(errors);
+            }
+            Err(err) => {
+                tracing::warn!("Panicked opening metadata {}: {err}", path.display());
                 errors.push(GetRepoFileError::OpenFile);
                 return Err(errors);
             }
@@ -114,21 +123,21 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
             task.abort();
             return Ok(StoredRepoPath::IsADir);
         }
-        
+
         let (mut data, file, hash, mut timing, mut start) = match task.await {
             Ok(Ok(v)) => v,
             Ok(Err(err)) => {
                 handle_err!(err, path);
             }
             Err(err) => {
-                tracing::error!("Panicked whilst opening file: {}", err);
+                tracing::error!("Panicked whilst opening file: {err}");
                 errors.push(GetRepoFileError::OpenFile);
                 return Err(errors);
             }
         };
 
         next = Instant::now();
-        timing.push(format!(r#"resolveImplLocalScheduleDelay;dur={};desc="Resolve Impl: Local: Scheduling Delay""#, (next-start).as_server_timing_duration()));
+        timing.push_iter_nodelim([r#"resolveImplLocalScheduleDelay;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Scheduling Delay""#]);
         core::mem::swap(&mut start, &mut next);
 
         let mut file = tokio::fs::File::from_std(file);
@@ -139,7 +148,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
             }
         }
         next = Instant::now();
-        timing.push(format!(r#"resolveImplLocalFileMetadataValidate;dur={};desc="Resolve Impl: Local: Validate or Create File Metadata""#, (next-start).as_server_timing_duration()));
+        timing.push_iter_nodelim([r#"resolveImplLocalFileMetadataValidate;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#"esc="Resolve Impl: Local: Validate or Create File Metadata""#]);
         core::mem::swap(&mut start, &mut next);
 
         Ok(StoredRepoPath::Mmap{

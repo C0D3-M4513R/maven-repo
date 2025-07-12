@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::ops::Deref;
 use std::time::Duration;
 use reqwest::StatusCode;
 use crate::repository::RemoteUpstream;
@@ -40,8 +41,8 @@ pub fn get_remote_request(
 
     (url, req)
 }
-pub async fn read_remote(url: String, timeout: Duration, headers: reqwest::header::HeaderMap) -> anyhow::Result<(String, reqwest::Response, Vec<u8>, blake3::Hash)>{
-    let mut res = crate::CLIENT.get(url.as_str())
+pub async fn read_remote<T: Deref<Target = str>>(url: T, timeout: Duration, headers: reqwest::header::HeaderMap) -> anyhow::Result<(T, reqwest::Response, Vec<u8>, blake3::Hash)>{
+    let mut res = crate::CLIENT.get(&*url)
         .timeout(timeout)
         .headers(headers)
         .send()

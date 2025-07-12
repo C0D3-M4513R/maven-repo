@@ -23,6 +23,7 @@ mod server_timings;
 mod file_metadata;
 mod remote;
 mod file_ext;
+mod timings;
 
 const UNAUTHORIZED: Return = Return{
     status: Status::Unauthorized,
@@ -176,7 +177,6 @@ async fn async_main() -> anyhow::Result<()> {
         }});
     }
     let  _ = rocket::build()
-        .attach(AddSourceLink)
         .mount("/", rocket::routes![
             get::get_repo_file,
             get::head_repo_file,
@@ -186,26 +186,11 @@ async fn async_main() -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
-
-struct AddSourceLink;
-#[rocket::async_trait]
-impl rocket::fairing::Fairing for AddSourceLink {
-    fn info(&self) -> rocket::fairing::Info {
-        rocket::fairing::Info{
-            name: "Add Source Link",
-            kind: rocket::fairing::Kind::Response,
-        }
-    }
-
-    async fn on_response<'r>(&self, _req: &'r rocket::Request<'_>, res: &mut rocket::Response<'r>) {
-        res.set_header(rocket::http::Header::new("X-Powered-By", env!("CARGO_PKG_REPOSITORY")));
-    }
-}
 struct RequestHeaders<'a> {
     pub headers: &'a rocket::http::HeaderMap<'a>,
     pub client_ip: Option<IpAddr>,
     pub has_trailing_slash: bool,
-    pub path: rocket::http::uri::Origin<'a>,
+    pub path: &'a rocket::http::uri::Origin<'a>,
 }
 #[rocket::async_trait]
 impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
@@ -216,7 +201,7 @@ impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
             headers: request.headers(),
             client_ip: request.client_ip(),
             has_trailing_slash: request.uri().path().ends_with("/"),
-            path: request.uri().clone(),
+            path: request.uri(),
         })
     }
 }

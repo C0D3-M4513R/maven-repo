@@ -11,6 +11,7 @@ use crate::get::StoredRepoPath;
 use crate::remote::get_remote_request;
 use crate::repository::{RemoteUpstream, Repository};
 use crate::server_timings::AsServerTimingDuration;
+use crate::timings::ServerTimings;
 
 pub async fn serve_remote_repository(
     remote: RemoteUpstream,
@@ -23,7 +24,7 @@ pub async fn serve_remote_repository(
 ) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
-    let mut timings = Vec::new();
+    let mut timings = ServerTimings::new();
 
     let (url, response) = get_remote_request(
         &remote,
@@ -53,7 +54,7 @@ pub async fn serve_remote_repository(
 
     if config.stores_remote_upstream.unwrap_or(true) {
         next = Instant::now();
-        timings.push(format!(r#"resolveImplRemoteRequestHead;dur={};desc="Resolve Impl: Remote: Send Request to Remote and wait for Headers""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim(["resolveImplRemoteRequestHead;dur=", (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Send Request to Remote and wait for Headers""#]);
         core::mem::swap(&mut start, &mut next);
 
         let path = Path::new(&repo).join(path);
@@ -64,7 +65,7 @@ pub async fn serve_remote_repository(
         }
 
         next = Instant::now();
-        timings.push(format!(r#"resolveImplRemoteFSCreateDirAll;dur={};desc="Resolve Impl: Remote: Create All Local Dirs""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplRemoteFSCreateDirAll;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Create All Local Dirs""#]);
         core::mem::swap(&mut start, &mut next);
 
         let (path, file, mut timings, mut start) = match tokio::task::spawn_blocking(move ||{
@@ -73,14 +74,14 @@ pub async fn serve_remote_repository(
             let file = std::fs::File::create_new(&path)?;
 
             next = Instant::now();
-            timings.push(format!(r#"resolveImplRemoteFSCreateFile;dur={};desc="Resolve Impl: Remote: Create new Local File""#, (next-start).as_server_timing_duration()));
+            timings.push_iter_nodelim([r#"resolveImplRemoteFSCreateFile;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Create new Local File""#]);
             core::mem::swap(&mut start, &mut next);
 
             #[cfg(feature = "locking")]
             file.lock()?;
 
             next = Instant::now();
-            timings.push(format!(r#"resolveImplRemoteFSCreateFile;dur={};desc="Resolve Impl: Remote: Lock Local File Exclusively""#, (next-start).as_server_timing_duration()));
+            timings.push_iter_nodelim([r#"resolveImplRemoteFSCreateFile;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Lock Local File Exclusively""#]);
             core::mem::swap(&mut start, &mut next);
 
             Ok::<_, std::io::Error>((path, file, timings, start))
@@ -103,7 +104,7 @@ pub async fn serve_remote_repository(
         let mut current_size = 0u64;
 
         let mut next = Instant::now();
-        timings.push(format!(r#"resolveImplRemoteBeforeBodyRead;dur={};desc="Resolve Impl: Remote: Task Scheduling Delay""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplRemoteBeforeBodyRead;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Task Scheduling Delay""#]);
         core::mem::swap(&mut start, &mut next);
         loop {
             let body = match response.chunk().await {
@@ -157,7 +158,7 @@ pub async fn serve_remote_repository(
             }
         }
         next = Instant::now();
-        timings.push(format!(r#"resolveImplRemoteBodyRead;dur={};desc="Resolve Impl: Remote: Read Remote Response in Chunks to Local File and Hash""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplRemoteBodyRead;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Read Remote Response in Chunks to Local File and Hash""#]);
         core::mem::swap(&mut start, &mut next);
         
         match FileMetadata::new_response_write(url, &response, hash.as_bytes(), &path).await {
@@ -167,7 +168,7 @@ pub async fn serve_remote_repository(
             }
         };
         next = Instant::now();
-        timings.push(format!(r#"resolveImplRemoteMetadataWrite;dur={};desc="Resolve Impl: Remote: Write File Metadata Info""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplRemoteMetadataWrite;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Write File Metadata Info""#]);
         core::mem::swap(&mut start, &mut next);
 
         let file = file.into_std().await;
@@ -193,7 +194,7 @@ pub async fn serve_remote_repository(
         };
 
         next = Instant::now();
-        timings.push(format!(r#"resolveImplRemoteFSRelockMemmap;dur={};desc="Resolve Impl: Remote: Release Exclusive Lock, Aquire Shared Lock and Memory-Map File""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplRemoteFSRelockMemmap;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Release Exclusive Lock, Aquire Shared Lock and Memory-Map File""#]);
         core::mem::swap(&mut start, &mut next);
         Ok(StoredRepoPath::Mmap{
             metadata,

@@ -57,6 +57,7 @@ impl<'r, 'o:'r> Responder<'r, 'o> for Return {
             }
         };
         self.content.fill_response(&mut response);
+        response.header(rocket::http::Header::new("X-Powered-By", env!("CARGO_PKG_REPOSITORY")));
         Ok(response.finalize())
     }
 }

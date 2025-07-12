@@ -9,6 +9,7 @@ repository = "https://github.com/C0D3-M4513R/maven-repo"
 dotenvy = "0.15.7"
 anyhow = "1.0.98"
 const_format = "0.2.34"
+smallvec = { version = "1.15.1", features = ["serde"] }
 
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
@@ -39,8 +40,9 @@ blake3 = "1.8.2"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [profile.release]
-lto = true
-strip = true
+lto = "thin"
+strip = false
+debug = "full"
 
 [features]
 default = ["locking"]

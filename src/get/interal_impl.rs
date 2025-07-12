@@ -8,14 +8,15 @@ use crate::get::{serve_remote_repository, serve_repository_stored_path, StoredRe
 use crate::repository::{get_repo_look_locations, Repository, Upstream};
 use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
+use crate::timings::ServerTimings;
 
-pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut Vec<String>, request_headers: &RequestHeaders<'_>, rocket_config: &rocket::Config) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders<'_>, rocket_config: &rocket::Config) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
     let (configs, mut errors) = get_repo_look_locations(repo, &config).await;
     next = Instant::now();
-    timings.push(format!(r#"resolveImplGetLocalRepoConfigs;dur={};desc="Resolve Implementation: Fetch all local upstream repo configs""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"resolveImplGetLocalRepoConfigs;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Fetch all local upstream repo configs""#]);
     tracing::info!("get_repo_file_impl: {repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
@@ -65,14 +66,14 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
 
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        timings.push(format!(r#"resolveImplQueryLocalRepositoriesFound;dur={};desc="Resolve Implementation: Query local repositories for File (HIT)""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplQueryLocalRepositoriesFound;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Query local repositories for File (HIT)""#]);
         tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (skipped remotes, as the information could be locally sourced)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
 
     next = Instant::now();
-    timings.push(format!(r#"resolveImplQueryLocalRepositoriesMiss;dur={};desc="Resolve Implementation: Query local repositories for File (MISS)""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"resolveImplQueryLocalRepositoriesMiss;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Query local repositories for File (MISS)""#]);
     tracing::info!("get_repo_file_impl: {repo}: local resolve took took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
     if path.components().any(|v|match v {
@@ -152,13 +153,13 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
     //Collect requests from upstreams
     if let Some(v) = check_result(&mut js).await {
         next = Instant::now();
-        timings.push(format!(r#"resolveImplQueryRemoteRepositoriesHit;dur={};desc="Resolve Implementation: Query remote repositories for File (HIT)""#, (next-start).as_server_timing_duration()));
+        timings.push_iter_nodelim([r#"resolveImplQueryRemoteRepositoriesHit;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Query remote repositories for File (HIT)""#]);
         tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
         core::mem::swap(&mut start, &mut next);
         return Ok(v);
     }
     next = Instant::now();
-    timings.push(format!(r#"resolveImplQueryRemoteRepositoriesMiss;dur={};desc="Resolve Implementation: Query remote repositories for File (MISS)""#, (next-start).as_server_timing_duration()));
+    timings.push_iter_nodelim([r#"resolveImplQueryRemoteRepositoriesMiss;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Query remote repositories for File (MISS)""#]);
     tracing::info!("get_repo_file_impl: {repo}: final resolve took took {}µs (contacted remotes)", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
