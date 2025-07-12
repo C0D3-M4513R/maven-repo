@@ -189,6 +189,9 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<HashMap<String, F
                     }
                     Ok(v) => v,
                 };
+                if file_name.starts_with(".") && file_name.ends_with(".json") {
+                    continue;
+                }
                 let file_type = match entry.file_type().await {
                     Err(_) => {
                         tracing::warn!("Error: failed to get the file-type of the directory entry");
