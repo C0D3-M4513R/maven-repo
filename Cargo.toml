@@ -40,9 +40,8 @@ blake3 = "1.8.2"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [profile.release]
-lto = "thin"
-strip = false
-debug = "full"
+lto = "fat"
+strip = true
 
 [features]
 default = ["locking"]
