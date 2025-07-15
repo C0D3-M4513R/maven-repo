@@ -108,9 +108,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
         let metadata = match metadata.await {
             Ok(Ok(v)) => v,
             Ok(Err(err)) => {
-                tracing::warn!("Error opening metadata {}: {err}", path.display());
-                errors.push(GetRepoFileError::OpenFile);
-                return Err(errors);
+                handle_err!(err, path);
             }
             Err(err) => {
                 tracing::warn!("Panicked opening metadata {}: {err}", path.display());
