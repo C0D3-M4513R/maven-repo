@@ -79,7 +79,11 @@ pub async fn header_check(
         if is_metadata {
             for i in &config.cache_control_metadata {
                 header_map.add(i.clone());
-                content_type = ContentType::XML;
+                if filename.is_empty() {
+                    content_type = ContentType::XML;
+                } else {
+                    content_type = ContentType::Text;
+                }
             }
         } else {
             for i in &config.cache_control_file {
