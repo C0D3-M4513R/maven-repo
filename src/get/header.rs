@@ -70,7 +70,13 @@ pub async fn header_check(
             header_map.add_raw(i.name.clone(), i.value.clone());
         }
     } else {
-        if str_path.ends_with("maven-metadata.xml") {
+        let filename = str_path.rsplit_once("/").map(|(_, v)|v).unwrap_or(str_path);
+        let filename = filename.strip_prefix("maven-metadata.xml").unwrap_or(filename);
+        let is_metadata = match filename {
+            "" | ".md5" | ".sha1" | ".sha256" | ".sha512" => true,
+            _ => false,
+        };
+        if is_metadata {
             for i in &config.cache_control_metadata {
                 header_map.add(i.clone());
                 content_type = ContentType::XML;
