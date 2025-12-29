@@ -93,6 +93,7 @@
       in
       {
         packages = {
+        		default = package;
             "${manifest.name}" = package;
             "${manifest.name}-docker" = docker;
         };
