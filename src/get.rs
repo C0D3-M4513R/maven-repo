@@ -21,18 +21,74 @@ use header::header_check;
 use interal_impl::resolve_impl;
 use crate::timings::ServerTimings;
 
-#[actix_web::get("/{repo}/{path..}")]
-pub async fn get_repo_file(path: actix_web::web::Path<(String, PathBuf)>, auth: Result<BasicAuthentication, Return>, request_headers: RequestHeaders) -> Return {
-    let (repo, path) = path.into_inner();
-    let repo = repo.as_str();
+pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthentication, Return>, request_headers: RequestHeaders) -> Return {
+    let uri = req.full_url();
+    let path = uri.path();
+    let path = path.strip_prefix("/").unwrap_or(path);
+    let path = PathBuf::from(path);
+    let repo;
+    let path = {
+        let mut iter = path.components();
+        loop {
+            match iter.next() {
+                Some(Component::Normal(v)) => {
+                    match v.to_str() {
+                        Some(v) => {
+                            repo = v;
+                            break;
+                        },
+                        None => return Return{
+                            status: actix_web::http::StatusCode::BAD_REQUEST,
+                            content: Content::Str("A part of the request was not valid UTF-8"),
+                            content_type: actix_web::http::header::ContentType::plaintext(),
+                            header_map: None,
+                        },
+                    }
+                }
+                Some(_) => continue,
+                None => return Return{
+                    status: actix_web::http::StatusCode::NOT_FOUND,
+                    content: Content::None,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
+                    header_map: None,
+                },
+            }
+        }
+        PathBuf::from_iter(iter)
+    };
     let mut timings = ServerTimings::new();
     let mut start = Instant::now();
     let mut next;
     let mut header_map = actix_web::http::header::HeaderMap::new();
+    {
+        match path.to_str() {
+            Some(v) => {
+                let canonical = format!(
+                    r#"<{}://{}/{repo}/{v}>; rel="canonical""#,
+                    uri.scheme(),
+                    uri.authority(),
+                );
+                match actix_web::http::header::HeaderValue::from_str(canonical.as_str()){
+                    Ok(v) => { header_map.append(actix_web::http::header::LINK, v);}
+                    Err(err) => {
+                        tracing::warn!("Failed to create a header-value from '{canonical}': {err}");
+                    }
+                };
+            },
+            None => {
+                tracing::warn!("Cannot convert path to str: {}", path.display());
+            }
+        }
+    }
 
     let auth = match auth {
-        Err(err) if err.status == actix_web::http::StatusCode::FORBIDDEN => None,
-        Err(err) => return err,
+        Err(err) => {
+            if err.status == actix_web::http::StatusCode::FORBIDDEN {
+                None
+            } else {
+                return err
+            }
+        },
         Ok(v) => {
             timings.push_iter_nodelim([r#"parseAuthenticationHeader;dur="#, v.duration.as_server_timing_duration().to_string().as_str(), r#";desc="Parseing HTTP Authentication Header""#]);
             Some(v)

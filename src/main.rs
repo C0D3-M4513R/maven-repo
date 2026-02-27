@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use actix_web::dev::Payload;
 use actix_web::HttpRequest;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use crate::auth::BasicAuthentication;
 use crate::repository::Repository;
 use crate::status::{Content, Return};
 
@@ -181,8 +182,8 @@ async fn async_main() -> anyhow::Result<()> {
     let  _ = actix_web::HttpServer::new(||
         actix_web::App::new()
             .wrap(actix_web::middleware::Logger::default())
-            .service(get::get_repo_file)
-            .service(put::put_repo_file)
+            .wrap(actix_web::middleware::NormalizePath::new(actix_web::middleware::TrailingSlash::MergeOnly))
+            .default_service(actix_web::web::route().to(repo_file))
     )
         // .bind_uds("server.socket")?
         .bind((core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST), 8080))?
@@ -209,5 +210,20 @@ impl actix_web::FromRequest for RequestHeaders {
             has_trailing_slash: request.uri().path().ends_with("/"),
             path: request.uri().clone(),
         }))
+    }
+}
+
+async fn repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthentication, Return>, request_headers: RequestHeaders, data: actix_web::web::Payload, method: actix_web::http::Method) -> Return {
+    match method {
+        actix_web::http::Method::PUT => put::put_repo_file(req, auth, data).await,
+        actix_web::http::Method::GET |
+        actix_web::http::Method::HEAD
+            => get::get_repo_file(req, auth, request_headers).await,
+        _ => Return {
+            status: actix_web::http::StatusCode::METHOD_NOT_ALLOWED,
+            content: Content::None,
+            content_type: actix_web::http::header::ContentType::plaintext(),
+            header_map: None,
+        }
     }
 }

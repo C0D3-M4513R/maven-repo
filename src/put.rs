@@ -15,14 +15,45 @@ use crate::path_info::PathInfo;
 use crate::repository::get_repo_config;
 use crate::status::{Content, Return};
 
-#[actix_web::put("/{repo}/{path..}")]
-pub async fn put_repo_file(path: actix_web::web::Path<(String, PathBuf)>, auth: Option<Result<BasicAuthentication, Return>>, data: actix_web::web::Payload) -> Return {
-    let (repo, path) = path.into_inner();
-    let repo = repo.as_str();
+pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthentication, Return>, data: actix_web::web::Payload) -> Return {
+    let uri = req.full_url();
+    let path = uri.path();
+    let path = path.strip_prefix("/").unwrap_or(path);
+    let path = PathBuf::from(path);
+    let repo;
+    let path = {
+        let mut iter = path.components();
+        loop {
+            match iter.next() {
+                Some(Component::Normal(v)) => {
+                    match v.to_str() {
+                        Some(v) => {
+                            repo = v;
+                            break;
+                        },
+                        None => return Return{
+                            status: actix_web::http::StatusCode::BAD_REQUEST,
+                            content: Content::Str("A part of the request was not valid UTF-8"),
+                            content_type: actix_web::http::header::ContentType::plaintext(),
+                            header_map: None,
+                        },
+                    }
+                }
+                Some(_) => continue,
+                None => return Return{
+                    status: actix_web::http::StatusCode::NOT_FOUND,
+                    content: Content::None,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
+                    header_map: None,
+                },
+            }
+        }
+        PathBuf::from_iter(iter)
+    };
     let auth = match auth {
-        Some(Err(err)) => return err,
-        Some(Ok(v)) => Some(v),
-        None => None,
+        Err(err) if err.status == actix_web::http::StatusCode::FORBIDDEN => None,
+        Err(err) => return err,
+        Ok(v) => Some(v),
     };
     if path.components().any(|v|
         match v {
