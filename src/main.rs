@@ -1,11 +1,12 @@
+extern crate core;
+
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::SeekFrom;
-use std::net::IpAddr;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use rocket::http::{ContentType, Status};
-use rocket::request::Outcome;
+use actix_web::dev::Payload;
+use actix_web::HttpRequest;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::repository::Repository;
 use crate::status::{Content, Return};
@@ -25,20 +26,21 @@ mod remote;
 mod file_ext;
 mod timings;
 
-const UNAUTHORIZED: Return = Return{
-    status: Status::Unauthorized,
+static UNAUTHORIZED: fn() -> Return = ||Return{
+    status: actix_web::http::StatusCode::UNAUTHORIZED,
     content: Content::Str("Unauthorized"),
-    content_type: ContentType::Text,
+    content_type: actix_web::http::header::ContentType::plaintext(),
     header_map: None,
 };
-const FORBIDDEN: Return = Return{
-    status: Status::Forbidden,
+static FORBIDDEN: fn() -> Return = ||Return{
+    status: actix_web::http::StatusCode::FORBIDDEN,
     content: Content::Str("Forbidden"),
-    content_type: ContentType::Text,
+    content_type: actix_web::http::header::ContentType::plaintext(),
     header_map: None,
 };
 const DEFAULT_MAX_FILE_SIZE:u64 = 4*1024*1024*1024;
 const DEFAULT_FRESH:Duration = Duration::from_secs(6*60*60); //6 hours
+const SERVER_TIMINGS: actix_web::http::header::HeaderName = actix_web::http::header::HeaderName::from_static("server-timing");
 
 static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
     let mut map = reqwest::header::HeaderMap::new();
@@ -127,10 +129,10 @@ fn main() -> anyhow::Result<()>{
             .init();
         tracing::info!("Initialized logging");
     }
-
-    rocket::execute(async_main())
+    async_main()
 }
 
+#[actix_web::main]
 async fn async_main() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -176,32 +178,36 @@ async fn async_main() -> anyhow::Result<()> {
             tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
         }});
     }
-    let  _ = rocket::build()
-        .mount("/", rocket::routes![
-            get::get_repo_file,
-            get::head_repo_file,
-            put::put_repo_file,
-        ])
-        .launch()
+    let  _ = actix_web::HttpServer::new(||
+        actix_web::App::new()
+            .wrap(actix_web::middleware::Logger::default())
+            .service(get::get_repo_file)
+            .service(put::put_repo_file)
+    )
+        // .bind_uds("server.socket")?
+        .bind((core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST), 8080))?
+        .run()
         .await?;
     Ok(())
 }
-struct RequestHeaders<'a> {
-    pub headers: &'a rocket::http::HeaderMap<'a>,
-    pub client_ip: Option<IpAddr>,
+struct RequestHeaders {
+    pub headers: actix_web::http::header::HeaderMap,
+    pub client_ip: Option<core::net::IpAddr>,
     pub has_trailing_slash: bool,
-    pub path: &'a rocket::http::uri::Origin<'a>,
+    pub path: actix_web::http::Uri,
 }
-#[rocket::async_trait]
-impl<'a> rocket::request::FromRequest<'a> for RequestHeaders<'a> {
+impl actix_web::FromRequest for RequestHeaders {
     type Error = Infallible;
+    type Future = core::future::Ready<Result<Self, Self::Error>>;
 
-    async fn from_request(request: &'a rocket::Request<'_>) -> Outcome<Self, Self::Error> {
-        Outcome::Success(Self{
-            headers: request.headers(),
-            client_ip: request.client_ip(),
+    fn from_request(request: &HttpRequest, _: &mut Payload) -> Self::Future {
+        let client_ip:Option<core::net::IpAddr> = request.connection_info().realip_remote_addr().map(|v|v.parse().ok()).flatten();
+
+        core::future::ready(Ok(Self{
+            headers: request.headers().clone(),
+            client_ip,
             has_trailing_slash: request.uri().path().ends_with("/"),
-            path: request.uri(),
-        })
+            path: request.uri().clone(),
+        }))
     }
 }

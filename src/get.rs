@@ -7,7 +7,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::FileType;
 use std::path::{Component, PathBuf};
-use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
 use crate::repository::get_repo_config;
@@ -22,25 +21,22 @@ use header::header_check;
 use interal_impl::resolve_impl;
 use crate::timings::ServerTimings;
 
-#[rocket::head("/<repo>/<path..>")]
-pub async fn head_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
-    get_repo_file(repo, path, auth, request_headers, rocket_config).await
-}
-
-#[rocket::get("/<repo>/<path..>")]
-pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, request_headers: RequestHeaders<'_>, rocket_config: &rocket::Config) -> Return {
+#[actix_web::get("/{repo}/{path..}")]
+pub async fn get_repo_file(path: actix_web::web::Path<(String, PathBuf)>, auth: Result<BasicAuthentication, Return>, request_headers: RequestHeaders) -> Return {
+    let (repo, path) = path.into_inner();
+    let repo = repo.as_str();
     let mut timings = ServerTimings::new();
     let mut start = Instant::now();
     let mut next;
-    let mut header_map = HeaderMap::new();
+    let mut header_map = actix_web::http::header::HeaderMap::new();
 
     let auth = match auth {
-        Some(Err(err)) => return err,
-        Some(Ok(v)) => {
+        Err(err) if err.status == actix_web::http::StatusCode::FORBIDDEN => None,
+        Err(err) => return err,
+        Ok(v) => {
             timings.push_iter_nodelim([r#"parseAuthenticationHeader;dur="#, v.duration.as_server_timing_duration().to_string().as_str(), r#";desc="Parseing HTTP Authentication Header""#]);
             Some(v)
         },
-        None => None,
     };
     if path.components().any(|v|
         match v {
@@ -71,7 +67,13 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(v) => v,
         Err(e) => {
             let mut ret = e.to_return();
-            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.value));
+
+            match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                Ok(v) => {ret.header_map.get_or_insert_default().append(crate::SERVER_TIMINGS, v);}
+                Err(err) => {
+                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                }
+            }
             return ret;
         },
     };
@@ -80,14 +82,14 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     tracing::info!("get_repo_file: {repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    match config.check_auth(rocket::http::Method::Get, auth, str_path) {
+    match config.check_auth(actix_web::http::Method::GET, auth, str_path) {
         Err(mut err) => {
-            err.header_map.get_or_insert_default().add_raw("Vary", "Authorization");
+            err.header_map.get_or_insert_default().append(actix_web::http::header::VARY, actix_web::http::header::HeaderValue::from_static("Authorization"));
             config.apply_cache_control(&mut err);
             return err
         },
         Ok(true) => {
-            header_map.add_raw("Vary", "Authorization");
+            header_map.append(actix_web::http::header::VARY, actix_web::http::header::HeaderValue::from_static("Authorization"))
         },
         Ok(false) => {},
     }
@@ -96,7 +98,7 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let resolve_impl = resolve_impl(repo, path.as_path(), str_path, &config, &mut timings, &request_headers, rocket_config).await;
+    let resolve_impl = resolve_impl(repo, path.as_path(), str_path, &config, &mut timings, &request_headers).await;
     next = Instant::now();
     timings.push_iter_nodelim([r#"resolveImpl;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Total Resolve Implementation""#]);
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
@@ -106,9 +108,9 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(StoredRepoPath::Mmap{metadata, data, hash, timing}) => (vec![metadata], Content::Mmap(data), hash, timing, false),
         Ok(StoredRepoPath::IsADir) => {
             let mut ret = Return {
-                status: Status::PermanentRedirect,
+                status: actix_web::http::StatusCode::PERMANENT_REDIRECT,
                 content: Content::None,
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             };
             let header_map = ret.header_map.get_or_insert_default();
@@ -116,7 +118,12 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             if !location.ends_with("/") {
                 location.push('/');
             }
-            header_map.add_raw("Location", location);
+            match actix_web::http::header::HeaderValue::from_str(location.as_str()) {
+                Ok(v) => {header_map.append(actix_web::http::header::LOCATION, v);}
+                Err(err) => {
+                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", location);
+                }
+            }
             return ret;
         },
         Ok(StoredRepoPath::DirListing{metadata, entries}) => {
@@ -126,14 +133,19 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         },
         Ok(StoredRepoPath::Upstream(upstream)) => {
             let mut ret = Return{
-                status: Status::Ok,
+                status: actix_web::http::StatusCode::OK,
                 content: Content::Response(upstream),
-                content_type: ContentType::Binary,
+                content_type: actix_web::http::header::ContentType::octet_stream(),
                 header_map: None,
             };
             let header_map  = ret.header_map.get_or_insert_default();
-            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
-            header_map.add(rocket::http::Header::new("Cache-Control", "no-store"));
+            match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                Err(err) => {
+                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                }
+            }
+            header_map.append(actix_web::http::header::CACHE_CONTROL, actix_web::http::header::HeaderValue::from_static("no-store"));
             config.apply_cache_control(&mut ret);
             return ret;
         },
@@ -153,12 +165,17 @@ pub async fn get_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 out.push('\n');
             }
             let mut ret = Return{
-                status: status_code.map(|codes|codes.into_iter().min()).unwrap_or(None).unwrap_or(Status::InternalServerError),
+                status: status_code.map(|codes|codes.into_iter().min()).unwrap_or(None).unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
                 content: Content::String(out),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: Default::default(),
             };
-            ret.header_map.get_or_insert_default().add(rocket::http::Header::new("Server-Timing", timings.value));
+            match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                Ok(v) => {ret.header_map.get_or_insert_default().append(crate::SERVER_TIMINGS, v);}
+                Err(err) => {
+                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                }
+            }
             config.apply_cache_control(&mut ret);
             return ret;
         }

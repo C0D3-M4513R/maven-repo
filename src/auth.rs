@@ -1,8 +1,5 @@
 use std::time::Instant;
 use base64::Engine;
-use rocket::http::Status;
-use rocket::Request;
-use rocket::request::{FromRequest, Outcome};
 use crate::status::{Content, Return};
 
 #[derive(Debug)]
@@ -12,33 +9,47 @@ pub struct BasicAuthentication {
     pub duration: std::time::Duration,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for BasicAuthentication {
+impl actix_web::FromRequest for BasicAuthentication {
     type Error = Return;
+    type Future = core::future::Ready<Result<Self, Self::Error>>;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Return> {
+    fn from_request(request: &actix_web::HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
         let start = Instant::now();
-        let request = match request.headers().get("Authorization").next() {
-            None => return Outcome::Forward(Status::Forbidden),
+        let request = match request.headers().get("Authorization") {
             Some(v) => v,
+            None => return core::future::ready(Err(Return{
+                status: actix_web::http::StatusCode::FORBIDDEN,
+                content: Content::Str("Got a request, which needs authorization, but didn't provide any"),
+                content_type: actix_web::http::header::ContentType::plaintext(),
+                header_map: Default::default(),
+            }))
+        };
+        let request = match request.to_str() {
+            Ok(v) => v,
+            Err(_) => return core::future::ready(Err(Return{
+                status: actix_web::http::StatusCode::BAD_REQUEST,
+                content: Content::Str("The Authorization header contains invalid characters"),
+                content_type: actix_web::http::header::ContentType::plaintext(),
+                header_map: Default::default(),
+            }))
         };
         let auth = match request.strip_prefix("Basic ") {
-            None => return Outcome::Error((Status::BadRequest, Return{
-                status: Status::BadRequest,
-                content: Content::Str("Got an Authorization header with something other than 'Basic' type auth"),
-                content_type: rocket::http::ContentType::Plain,
-                header_map: Default::default(),
-            })),
             Some(v) => v,
+            None => return core::future::ready(Err(Return{
+                status: actix_web::http::StatusCode::BAD_REQUEST,
+                content: Content::Str("Got an Authorization header with something other than 'Basic' type auth"),
+                content_type: actix_web::http::header::ContentType::plaintext(),
+                header_map: Default::default(),
+            }))
         };
         let auth = match base64::engine::general_purpose::STANDARD.decode(auth) {
             Ok(v) => v,
             Err(err) => {
                 tracing::error!("Request with Basic Authorization header, but invalid Base64: {err}");
-                return Outcome::Error((Status::BadRequest, Return{
-                    status: Status::BadRequest,
+                return core::future::ready(Err(Return{
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::Str("Got an Basic Authorization header with invalid Base64"),
-                    content_type: rocket::http::ContentType::Plain,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: Default::default(),
                 }))
             }
@@ -47,10 +58,10 @@ impl<'r> FromRequest<'r> for BasicAuthentication {
             Ok(v) => v,
             Err(err) => {
                 tracing::error!("Request with Basic Authorization header and valid Base64, but the contained bytes were invalid UTF-8: {err}");
-                return Outcome::Error((Status::BadRequest, Return{
-                    status: Status::BadRequest,
+                return core::future::ready(Err(Return{
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::Str("Request with Basic Authorization header and valid Base64, but the contained bytes were invalid UTF-8"),
-                    content_type: rocket::http::ContentType::Plain,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: Default::default(),
                 }))
             }
@@ -59,10 +70,10 @@ impl<'r> FromRequest<'r> for BasicAuthentication {
             Some(v) => v,
             None => {
                 tracing::error!("Request with Basic Authorization header and valid Base64 with valid UTF-8 contents, but the contained UTF-8 string did not contain a ':'");
-                return Outcome::Error((Status::BadRequest, Return{
-                    status: Status::BadRequest,
+                return core::future::ready(Err(Return{
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::Str("Request with Basic Authorization header and valid Base64 with valid UTF-8 contents, but the contained UTF-8 string did not contain a ':'"),
-                    content_type: rocket::http::ContentType::Plain,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: Default::default(),
                 }))
             }
@@ -70,10 +81,11 @@ impl<'r> FromRequest<'r> for BasicAuthentication {
         let username = username.to_owned();
         let password = password.to_owned();
 
-        Outcome::Success(Self{
+        core::future::ready(Ok(Self{
             username,
             password,
             duration: Instant::now() - start,
-        })
+        }))
     }
+
 }

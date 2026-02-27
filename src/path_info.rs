@@ -1,7 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 use chrono::{Datelike, Timelike};
-use rocket::http::{ContentType, Status};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use crate::err::GetRepoFileError;
@@ -63,36 +62,36 @@ impl<'a> PathInfo<'a> {
         }
         let file_name = match version {
             None => return Err(Return{
-                status: Status::BadRequest,
+                status: actix_web::http::StatusCode::BAD_REQUEST,
                 content: Content::Str("Didn't find a File-Name in the path"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             }),
             Some(v) => v,
         };
         let version = match version {
             None => return Err(Return{
-                status: Status::BadRequest,
+                status: actix_web::http::StatusCode::BAD_REQUEST,
                 content: Content::Str("Didn't find a Version in the path"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             }),
             Some(v) => v,
         };
         let artifact = match artifact {
             None => return Err(Return{
-                status: Status::BadRequest,
+                status: actix_web::http::StatusCode::BAD_REQUEST,
                 content: Content::Str("Didn't find an Artifact-Id in the path"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             }),
             Some(v) => v,
         };
         if group.is_empty() {
             return Err(Return{
-                status: Status::BadRequest,
+                status: actix_web::http::StatusCode::BAD_REQUEST,
                 content: Content::Str("Didn't find a Group-Id in the path"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             })
         }
@@ -101,9 +100,9 @@ impl<'a> PathInfo<'a> {
         let (file_name, extension) = file_name.rsplit_once(".").map(|(name, ext)|(name, Some(ext))).unwrap_or((file_name, None));
         let file_name = match file_name.strip_prefix(artifact).and_then(|v|v.strip_prefix("-")) {
             None => return Err(Return{
-                    status: Status::BadRequest,
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::Str("File didn't begin with artifact-id"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 }),
             Some(v) => v,
@@ -114,9 +113,9 @@ impl<'a> PathInfo<'a> {
         };
         let file_name = match file_name.strip_prefix(version).and_then(|v|v.strip_prefix("-")) {
             None => return Err(Return{
-                status: Status::BadRequest,
+                status: actix_web::http::StatusCode::BAD_REQUEST,
                 content: Content::Str("File didn't contain version"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             }),
             Some(v) => v,
@@ -124,18 +123,18 @@ impl<'a> PathInfo<'a> {
         let (file_name, snapshot) = if is_snapshot {
             let (timestamp, file_name) = match file_name.split_once("-") {
                 None => return Err(Return{
-                    status: Status::BadRequest,
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::Str("File didn't contain Snapshot timestamp"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 }),
                 Some(v) => v,
             };
             let (build_number, file_name) = match file_name.split_once("-") {
                 None => return Err(Return{
-                    status: Status::BadRequest,
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::Str("File didn't contain Snapshot build-number"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 }),
                 Some(v) => v,
@@ -143,9 +142,9 @@ impl<'a> PathInfo<'a> {
             let build_number = match u64::from_str_radix(build_number, 10) {
                 Ok(v) => v,
                 Err(err) => return Err(Return{
-                    status: Status::BadRequest,
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::String(format!("build-number in filename couldn't be parsed as a string: build-number: {build_number}, err: {err}")),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 })
             };
@@ -190,9 +189,9 @@ impl<'a> PathInfo<'a> {
             Err(err) => {
                 tracing::error!("Error creating or opening maven-metadata {}: {err}", metadata_path.display());
                 return Err(Return{
-                    status: Status::InternalServerError,
+                    status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                     content: Content::Str("Error creating or opening maven-metadata file"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 })
             }
@@ -215,18 +214,18 @@ impl<'a> PathInfo<'a> {
                 Ok((_, Err(err))) => {
                     tracing::error!("Error locking maven-metadata to String {}: {err}", metadata_path.display());
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Error reading maven-metadata to String"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: None,
                     })
                 }
                 Err(err) => {
                     tracing::error!("Error locking maven-metadata to String {}: {err}", metadata_path.display());
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Error reading maven-metadata to String"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: None,
                     })
                 }
@@ -238,9 +237,9 @@ impl<'a> PathInfo<'a> {
             Err(err) => {
                 tracing::error!("Error reading maven-metadata to String {}: {err}", metadata_path.display());
                 return Err(Return{
-                    status: Status::InternalServerError,
+                    status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                     content: Content::Str("Error reading maven-metadata to String"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 })
             }
@@ -252,9 +251,9 @@ impl<'a> PathInfo<'a> {
                 Err(err) => {
                     tracing::error!("Failed to parse maven-metadata.xml {}: {err}", metadata_path.display());
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Error deserializing maven-metadata"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: None,
                     })
                 }
@@ -276,7 +275,7 @@ impl<'a> PathInfo<'a> {
 
         Ok((metadata_path, file, metadata, contents))
     }
-    pub async fn get_merged_metadata(&self, repo: &str, action: rocket::http::Method) -> Result<Vec<MavenMetadataReturn>, Return> {
+    pub async fn get_merged_metadata(&self, repo: &str, action: actix_web::http::Method) -> Result<Vec<MavenMetadataReturn>, Return> {
         let mut out = Vec::new();
         let (path, file, mut metadata, _) = self.get_metadata_int(repo, false, true).await?;
         
@@ -284,7 +283,7 @@ impl<'a> PathInfo<'a> {
             Some(snapshot) => {
                 let (snapshot_path, snapshot_file, mut snapshot_metadata, _) = self.get_metadata_int(repo, true, true).await?;
                 match action {
-                    rocket::http::Method::Delete => {
+                    actix_web::http::Method::DELETE => {
                         let value = format!("{}-{}-{}", self.version, snapshot.timestamp, snapshot.build_number);
                         snapshot_metadata.versioning.snapshot_versions.get_or_insert_default().snapshot_version.retain(|v|
                             v.value != value ||
@@ -309,9 +308,9 @@ impl<'a> PathInfo<'a> {
                                         let build_number = match iter.next() {
                                             Some(v) => v,
                                             None => return Err(Return{
-                                                status: Status::InternalServerError,
+                                                status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                                                 content: Content::Str("Next version doesn't have a build_number"),
-                                                content_type: ContentType::Text,
+                                                content_type: actix_web::http::header::ContentType::plaintext(),
                                                 header_map: None,
                                             })
                                         };
@@ -320,9 +319,9 @@ impl<'a> PathInfo<'a> {
                                             Err(err) => {
                                                 tracing::error!("Failed to parse build_number {}: build_number:{build_number} err:{err}", path.display());
                                                 return Err(Return{
-                                                    status: Status::InternalServerError,
+                                                    status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                                                     content: Content::Str("Next version doesn't have a valid build_number"),
-                                                    content_type: ContentType::Text,
+                                                    content_type: actix_web::http::header::ContentType::plaintext(),
                                                     header_map: None,
                                                 })
                                             }
@@ -330,9 +329,9 @@ impl<'a> PathInfo<'a> {
                                         let timestamp = match iter.next() {
                                             Some(v) => v,
                                             None => return Err(Return{
-                                                status: Status::InternalServerError,
+                                                status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                                                 content: Content::Str("Next version doesn't have a timestamp"),
-                                                content_type: ContentType::Text,
+                                                content_type: actix_web::http::header::ContentType::plaintext(),
                                                 header_map: None,
                                             })
                                         };
@@ -352,7 +351,7 @@ impl<'a> PathInfo<'a> {
                         // but having no snapshotVersion's in the Version-Level Maven-Metadata.
                         out.push((snapshot_path, snapshot_file, snapshot_metadata));
                     }
-                    rocket::http::Method::Put => {
+                    actix_web::http::Method::PUT => {
                         snapshot_metadata.versioning.snapshot = Some(Snapshot {
                             timestamp: snapshot.timestamp.to_owned(),
                             build_number: snapshot.build_number,
@@ -373,8 +372,8 @@ impl<'a> PathInfo<'a> {
             },
             None => {
                 if match action {
-                    rocket::http::Method::Delete => metadata.versioning.versions.get_or_insert_default().version.remove(self.version),
-                    rocket::http::Method::Put => metadata.versioning.versions.get_or_insert_default().version.insert(self.version.to_owned()),
+                    actix_web::http::Method::DELETE => metadata.versioning.versions.get_or_insert_default().version.remove(self.version),
+                    actix_web::http::Method::PUT => metadata.versioning.versions.get_or_insert_default().version.insert(self.version.to_owned()),
                    _ => false,
                 } {
                     out.push((path, file, metadata));
@@ -393,9 +392,9 @@ impl<'a> PathInfo<'a> {
                     Err(err) => {
                         tracing::error!("Failed to serialize maven metadata '{}' value '{meta:#?}': {err}", path.display());
                         return Err(Return{
-                            status: Status::InternalServerError,
+                            status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                             content: Content::Str("Failed to serialize altered maven metadata"),
-                            content_type: ContentType::Text,
+                            content_type: actix_web::http::header::ContentType::plaintext(),
                             header_map: None,
                         })
                     }

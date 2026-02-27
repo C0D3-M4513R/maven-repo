@@ -33,7 +33,7 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
         if !display_dir {
             errors.push(GetRepoFileError::NotFound);
         } else {
-            match tokio::join!(
+            match futures::join!(
                 serve_repository_stored_dir(&path),
                 tokio::fs::metadata(&path)
             ) {

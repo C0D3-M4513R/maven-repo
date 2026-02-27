@@ -4,19 +4,21 @@ use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use digest::Digest;
-use rocket::data::ByteUnit;
-use rocket::http::{ContentType, Status};
+use futures::TryStreamExt;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
 use crate::path_info::PathInfo;
 use crate::repository::get_repo_config;
 use crate::status::{Content, Return};
 
-#[rocket::put("/<repo>/<path..>", data="<data>")]
-pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicAuthentication, Return>>, data: rocket::data::Data<'_>) -> Return {
+#[actix_web::put("/{repo}/{path..}")]
+pub async fn put_repo_file(path: actix_web::web::Path<(String, PathBuf)>, auth: Option<Result<BasicAuthentication, Return>>, data: actix_web::web::Payload) -> Return {
+    let (repo, path) = path.into_inner();
+    let repo = repo.as_str();
     let auth = match auth {
         Some(Err(err)) => return err,
         Some(Ok(v)) => Some(v),
@@ -50,14 +52,14 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
 
     if !config.upstreams.is_empty() {
         return Return {
-            status: Status::Forbidden,
+            status: actix_web::http::StatusCode::FORBIDDEN,
             content: Content::Str("It's forbidden to deploy to a repo, which has remotes."),
-            content_type: ContentType::Text,
+            content_type: actix_web::http::header::ContentType::plaintext(),
             header_map: None,
         }
     }
     
-    match config.check_auth(rocket::http::Method::Put, auth, str_path) {
+    match config.check_auth(actix_web::http::Method::PUT, auth, str_path) {
         Err(err) => return err,
         Ok(_) => {},
     }
@@ -66,7 +68,7 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
         Ok(v) => v,
         Err(err) => return err,
     };
-    let metadata = match info.get_merged_metadata(repo, rocket::http::Method::Put).await {
+    let metadata = match info.get_merged_metadata(repo, actix_web::http::Method::PUT).await {
         Ok(v) => v,
         Err(err) => return err,
     };
@@ -86,22 +88,23 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
             tracing::error!("Failed to create new file dirs while deploying {}: {err}", path.display());
             return match err.kind() {
                 ErrorKind::AlreadyExists => Return {
-                    status: Status::Conflict,
+                    status: actix_web::http::StatusCode::CONFLICT,
                     content: Content::Str("File already exists"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 },
                 _ => Return {
-                    status: Status::InternalServerError,
+                    status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                     content: Content::Str("Failed creating file"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 }
             }
         }
     };
     let max_file_size = config.max_file_size.unwrap_or(crate::DEFAULT_MAX_FILE_SIZE);
-    match put_file(file, path.clone(), max_file_size, data.open(ByteUnit::max_value())).await {
+    let data = data.map_err(std::io::Error::other).into_async_read().compat();
+    match put_file(file, path.clone(), max_file_size, data).await {
         Ok(_) => {},
         Err(err) => return err,
     };
@@ -117,9 +120,9 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
                 tracing::error!("Panicked whilst updating maven-metadata for deployment of {}: {err}", path.display());
                 js.abort_all();
                 return Return {
-                    status: Status::InternalServerError,
+                    status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                     content: Content::Str("Panicked whilst updating maven-metadata"),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: None,
                 };
             }
@@ -127,9 +130,9 @@ pub async fn put_repo_file(repo: &str, path: PathBuf, auth: Option<Result<BasicA
     }
 
     Return{
-        status: Status::Created,
+        status: actix_web::http::StatusCode::CREATED,
         content: Content::Str(""),
-        content_type: ContentType::Text,
+        content_type: actix_web::http::header::ContentType::plaintext(),
         header_map: None,
     }
 }
@@ -139,9 +142,9 @@ async fn create_file_dirs(repo: &str, path: &Path) -> Result<(), Return> {
     let parent = match file_path.parent() {
         Some(v) => v,
         None => return Err(Return {
-            status: Status::BadRequest,
+            status: actix_web::http::StatusCode::BAD_REQUEST,
             content: Content::Str("Deploy path has no proper parent directory"),
-            content_type: ContentType::Text,
+            content_type: actix_web::http::header::ContentType::plaintext(),
             header_map: None,
         }),
     };
@@ -150,9 +153,9 @@ async fn create_file_dirs(repo: &str, path: &Path) -> Result<(), Return> {
         Err(err) => {
             tracing::error!("Failed to create dirs while deploying {}: {err}", path.display());
             Err(Return {
-                status: Status::InternalServerError,
+                status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 content: Content::Str("Failed to create parent directories."),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             })
         }
@@ -185,9 +188,9 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
             tracing::error!("Failed to finalize write to {}: {err}", file_path.display());
             remove_files(&files).await;
             return Err(Return {
-                status: Status::InternalServerError,
+                status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 content: Content::Str("Failed to finish writing to file"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             })
         }
@@ -213,9 +216,9 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
                     tracing::error!("Failed to create hash of file {}.{}: {err}", file_path.display(), $extension);
                     remove_files(&files).await;
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Failed to create file for storing the File hash"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: None,
                     })
                 }
@@ -229,9 +232,9 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
                     tracing::error!("Failed to write hash of file {}.{}: {err}", file_path.display(), $extension);
                     remove_files(&files).await;
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Failed to write file hash"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: None,
                     })
                 }
@@ -242,9 +245,9 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
                     tracing::error!("Failed to finalize write hash of file {}.{}: {err}", file_path.display(), $extension);
                     remove_files(&files).await;
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Failed to finalize write file hash"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: None,
                     })
                 }
@@ -268,18 +271,18 @@ async fn put_file<D: tokio::io::AsyncRead + Unpin>(file: File, file_path: PathBu
         Ok(Err(err)) => {
             tracing::error!("Error whilst unlocking file {}: {err}", file_path.display());
             return Err(Return {
-                status: Status::InternalServerError,
+                status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 content: Content::Str("Error whilst unlocking file"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             })
         }
         Err(err) => {
             tracing::error!("Panicked whilst unlocking file {}: {err}", file_path.display());
             return Err(Return {
-                status: Status::InternalServerError,
+                status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 content: Content::Str("Panicked whilst unlocking file"),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             })
         }

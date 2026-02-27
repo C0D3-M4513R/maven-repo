@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use rocket::http::{ContentType, Status};
 use serde_derive::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
@@ -72,9 +72,18 @@ impl Repository {
     }
     pub fn apply_cache_control(&self, ret: &mut Return) {
         let header_map = ret.header_map.get_or_insert_default();
-        if let Some(headers) = self.cache_control_status_code.get(&ret.status.code) {
+        if let Some(headers) = self.cache_control_status_code.get(&ret.status.as_u16()) {
             for header in headers {
-                header_map.add_raw(header.name.clone(), header.value.clone());
+                let name = match actix_web::http::header::HeaderName::from_str(header.name.as_str()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                
+                let value = match actix_web::http::header::HeaderValue::from_str(header.value.as_str()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                header_map.insert(name, value);
             }
         }
     }
@@ -95,17 +104,23 @@ pub struct Header{
     pub name: String,
     pub value: String,
 }
-impl From<Header> for rocket::http::Header<'static> {
-    fn from(value: Header) -> Self {
-        Self::new(value.name, value.value)
-    }
-}
-impl From<rocket::http::Header<'static>> for Header {
-    fn from(value: rocket::http::Header<'static>) -> Self {
-        Self{
-            name: value.name.into_string(),
-            value: value.value.into_owned(),
-        }
+impl Header {
+    pub fn add_to_map(&self, header_map: &mut actix_web::http::header::HeaderMap) {
+        let name = match actix_web::http::header::HeaderName::from_bytes(self.name.as_str().as_bytes()){
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!("Cannot convert '{}' to a header-name: {err}", self.name);
+                return;
+            }
+        };
+        let value = match actix_web::http::header::HeaderValue::from_bytes(self.value.as_str().as_bytes()){
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!("Cannot convert '{}' to a header-value: {err}", self.value);
+                return;
+            }
+        };
+        header_map.append(name, value);
     }
 }
 
@@ -130,45 +145,45 @@ pub struct PathAuthorization{
 }
 
 impl Repository {
-    pub fn check_auth(&self, method: rocket::http::Method, auth: Option<BasicAuthentication>, path: &str) -> Result<bool, Return> {
+    pub fn check_auth(&self, method: actix_web::http::Method, auth: Option<BasicAuthentication>, path: &str) -> Result<bool, Return> {
         let needs_auth = match method {
-            rocket::http::Method::Get => !self.publicly_readable.unwrap_or(true),
+            actix_web::http::Method::GET => !self.publicly_readable.unwrap_or(true),
             _ => true,
         };
         if needs_auth {
             let auth = match auth {
-                None => return Err(crate::UNAUTHORIZED),
+                None => return Err(crate::UNAUTHORIZED()),
                 Some(v) => v,
             };
             let token = match self.tokens.get(&auth.username) {
                 Some(v) => v,
-                None => return Err(crate::UNAUTHORIZED),
+                None => return Err(crate::UNAUTHORIZED()),
             };
             //Todo: this won't work with subdirs
             let path = match token.paths.get(path) {
-                None => return Err(crate::UNAUTHORIZED),
+                None => return Err(crate::UNAUTHORIZED()),
                 Some(v) => v,
             };
             match bcrypt::verify(&auth.password, &token.hash) {
                 Ok(true) => {},
-                Ok(false) => return Err(crate::UNAUTHORIZED),
+                Ok(false) => return Err(crate::UNAUTHORIZED()),
                 Err(err) => {
                     tracing::error!("Failed to verify password '{}' against hash '{}': {err}", &auth.password, &token.hash);
                     return Err(Return{
-                        status: Status::InternalServerError,
+                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                         content: Content::Str("Error validating password"),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: Default::default(),
                     });
                 }
             }
             if !match method {
-                rocket::http::Method::Get => path.read,
-                rocket::http::Method::Put => path.put,
-                rocket::http::Method::Delete => path.delete,
+                actix_web::http::Method::GET => path.read,
+                actix_web::http::Method::PUT => path.put,
+                actix_web::http::Method::DELETE => path.delete,
                 _ => false,
             } {
-                return Err(crate::FORBIDDEN);
+                return Err(crate::FORBIDDEN());
             }
 
             Ok(true)

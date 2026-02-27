@@ -10,7 +10,7 @@ use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
 use crate::timings::ServerTimings;
 
-pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders<'_>, rocket_config: &rocket::Config) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
@@ -97,31 +97,44 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
         let remote_path = LazyLock::new(||Arc::<Path>::from(path));
         let request_url = LazyLock::new(||Arc::<str>::from({
             let mut domain = String::new();
-            match request_headers.headers.get_one("X-Forwarded-Proto") {
+            match match request_headers.headers.get("X-Forwarded-Proto") {
+                Some(v) => match v.to_str() {
+                    Ok(v) => Some(v),
+                    Err(err) => {
+                        tracing::warn!("Failed to parse '{}' as string: {err}", String::from_utf8_lossy(v.as_bytes()));
+                        None
+                    },
+                },
+                None => None,
+            }{
                 Some(v) => {
                     domain.push_str(v);
                     domain.push_str("://");
                 },
                 None => {
-                    if rocket_config.tls_enabled() {
-                        domain.push_str("https://");
-                    } else {
-                        domain.push_str("http://");
-                    }
-                },
+                    domain.push_str("https://");
+                }
             };
-            match request_headers.headers.get("Host")
-                .chain(request_headers.headers.get("X-Forwarded-Host"))
-                .chain(request_headers.headers.get("X-Forwarded-Server"))
+            match match request_headers.headers.get_all("Host")
+                .chain(request_headers.headers.get_all("X-Forwarded-Host"))
+                .chain(request_headers.headers.get_all("X-Forwarded-Server"))
                 .next()
             {
                 Some(v) => {
-                    domain.push_str(v);
-                }
-                None => {
-                    domain.push_str("unknown-host");
-                }
+                    match v.to_str() {
+                        Ok(v) => Some(v),
+                        Err(err) => {
+                            tracing::warn!("Failed to parse '{}' as string: {err}", String::from_utf8_lossy(v.as_bytes()));
+                            None
+                        },
+                    }
+                },
+                None => None,
+            }{
+                Some(v) => { domain.push_str(v); },
+                None => { domain.push_str("unknown-host"); }
             }
+
             if !str_path.starts_with("/") {
                 domain.push('/');
             }

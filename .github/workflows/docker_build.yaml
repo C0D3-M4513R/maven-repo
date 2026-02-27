@@ -58,3 +58,63 @@ jobs:
       # Build the package defined in the Nix Flake
       - name: Build the derivation defined in the Nix Flake
         run: nix --extra-experimental-features nix-command --extra-experimental-features flakes build .#$(yq .package.name Cargo.toml) -L
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: "c0d3-m4513r"
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Load image
+        run: docker load -i result
+      - name: Tag commit as Release
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          tag=$(yq .package.version Cargo.toml)
+          git tag "$tag"
+          git push origin "$tag" --force-with-lease
+
+      - name: re-tag as version and push
+        run: |
+          version=$(yq .package.version Cargo.toml)
+          docker tag $(yq .package.name Cargo.toml):${version}-${{ matrix.arch }} ghcr.io/c0d3-m4513r/maven-repo:${GITHUB_SHA}-${{ matrix.arch }}
+          docker push ghcr.io/c0d3-m4513r/maven-repo:${GITHUB_SHA}-${{ matrix.arch }}
+
+  multi-arch:
+    permissions:
+      packages: write
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the package
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: "c0d3-m4513r"
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and Push Version manifest
+        run: |
+          version=${GITHUB_SHA}
+          docker manifest create ghcr.io/c0d3-m4513r/c0d3-m4513r:${version} ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-amd64 ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-arm64
+          docker manifest annotate ghcr.io/c0d3-m4513r/c0d3-m4513r:${version} ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-amd64 --arch amd64
+          docker manifest annotate ghcr.io/c0d3-m4513r/c0d3-m4513r:${version} ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-arm64 --arch arm64
+          docker manifest push ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}
+
+      - name: Create and Push latest manifest
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          version=${GITHUB_SHA}
+          docker manifest create ghcr.io/c0d3-m4513r/c0d3-m4513r:latest ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-amd64 ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-arm64
+          docker manifest annotate ghcr.io/c0d3-m4513r/c0d3-m4513r:latest ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-amd64 --arch amd64
+          docker manifest annotate ghcr.io/c0d3-m4513r/c0d3-m4513r:latest ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-arm64 --arch arm64
+          docker manifest push ghcr.io/c0d3-m4513r/c0d3-m4513r:latest
+
+      - name: Create and Push nightly manifest
+        if: ${{ github.ref == 'refs/heads/dev' }}
+        run: |
+          version=${GITHUB_SHA}
+          docker manifest create ghcr.io/c0d3-m4513r/c0d3-m4513r:nightly ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-amd64 ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-arm64
+          docker manifest annotate ghcr.io/c0d3-m4513r/c0d3-m4513r:nightly ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-amd64 --arch amd64
+          docker manifest annotate ghcr.io/c0d3-m4513r/c0d3-m4513r:nightly ghcr.io/c0d3-m4513r/c0d3-m4513r:${version}-arm64 --arch arm64
+          docker manifest push ghcr.io/c0d3-m4513r/c0d3-m4513r:nightly

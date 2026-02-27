@@ -1,7 +1,5 @@
-use std::ffi::OsStr;
 use std::path::Path;
 use base64::Engine;
-use rocket::http::{ContentType, HeaderMap, Status};
 use tokio::time::Instant;
 use crate::etag::ETagValidator;
 use crate::repository::Repository;
@@ -18,28 +16,29 @@ pub async fn header_check(
     mut timings: ServerTimings,
     mut content: Content,
     dir_listing: bool,
-    request_headers: &RequestHeaders<'_>,
+    request_headers: &RequestHeaders,
     hash: blake3::Hash,
     metadata: &Vec<std::fs::Metadata>,
-    mut header_map: HeaderMap<'static>,
+    mut header_map: actix_web::http::header::HeaderMap,
     start: &mut Instant,
     next: &mut Instant,
 ) -> Return {
-    let mut status = Status::Ok;
+    let mut status = actix_web::http::StatusCode::OK;
     let mut content_type = if dir_listing {
-        ContentType::HTML
+        actix_web::http::header::ContentType::html()
     } else {
-        if config.infer_content_type_on_file_extension.unwrap_or(true) {
-            path.extension()
-                .and_then(OsStr::to_str)
-                .and_then(ContentType::from_extension)
-                .unwrap_or(ContentType::Binary)
-        } else {
-            ContentType::Binary
-        }
+        actix_web::http::header::ContentType::octet_stream()
     };
 
-    header_map.add(rocket::http::Header::new("ETag", format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()))));
+    let etag = format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()));
+    match actix_web::http::header::HeaderValue::from_str(etag.as_str()) {
+        Ok(v) => {
+            header_map.append(actix_web::http::header::ETAG, v);
+        }
+        Err(err) => {
+            tracing::warn!("Cannot make a header value from '{etag}': {err}")
+        }
+    }
     let (modification_datetime, modification_err) = {
         let (modification_datetime, errors) = metadata.iter().map(|v|v.modified()).fold((None, Vec::new()), |(mut time, mut errors), res|{
             match res {
@@ -62,12 +61,18 @@ pub async fn header_check(
         (modification_datetime.map(chrono::DateTime::<chrono::Utc>::from), errors)
     };
     if let Some(modification_datetime) = modification_datetime {
-        header_map.add(rocket::http::Header::new("Last-Modified", modification_datetime.to_rfc2822()));
+        let modification_datetime = modification_datetime.to_rfc2822();
+        match actix_web::http::header::HeaderValue::from_str(modification_datetime.as_str()){
+            Ok(v) => { header_map.append(actix_web::http::header::LAST_MODIFIED, v); }
+            Err(err) => {
+                tracing::warn!("Cannot convert '{modification_datetime}' to a header-value: {err}");
+            }
+        }
     }
 
     if dir_listing {
         for i in &config.cache_control_dir_listings {
-            header_map.add_raw(i.name.clone(), i.value.clone());
+            i.add_to_map(&mut header_map);
         }
     } else {
         let filename = str_path.rsplit_once("/").map(|(_, v)|v).unwrap_or(str_path);
@@ -78,28 +83,35 @@ pub async fn header_check(
         };
         if is_metadata {
             for i in &config.cache_control_metadata {
-                header_map.add(i.clone());
+                i.add_to_map(&mut header_map);
                 if filename.is_empty() {
-                    content_type = ContentType::XML;
+                    content_type = actix_web::http::header::ContentType::xml();
                 } else {
-                    content_type = ContentType::Text;
+                    content_type = actix_web::http::header::ContentType::plaintext();
                 }
             }
         } else {
             for i in &config.cache_control_file {
-                header_map.add(i.clone());
+                i.add_to_map(&mut header_map);
             }
         }
     }
 
     // Check for If-None-Match header
     let mut contains_none_match = false;
-    for i in request_headers.headers.get("If-None-Match") {
+    for i in request_headers.headers.get_all("If-None-Match") {
+        let i = match i.to_str(){
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!("Couldn't create string from a header-value '{}': {err}", String::from_utf8_lossy(i.as_bytes()));
+                continue;
+            }
+        };
         contains_none_match = true;
         let v = match ETagValidator::parse(i) {
             Some(ETagValidator::Any) => {
                 content = Content::None;
-                status = Status::NotModified;
+                status = actix_web::http::StatusCode::NOT_MODIFIED;
                 break
             },
             Some(ETagValidator::Tags(v)) => v,
@@ -109,13 +121,19 @@ pub async fn header_check(
                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                 core::mem::swap(start, next);
 
-                header_map.remove_all();
-                header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+                header_map.clear();
+
+                match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                    Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                    Err(err) => {
+                        tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                    }
+                }
 
                 return Return {
-                    status: Status::BadRequest,
+                    status: actix_web::http::StatusCode::BAD_REQUEST,
                     content: Content::String(format!("Bad If-None-Match header: {i}")),
-                    content_type: ContentType::Text,
+                    content_type: actix_web::http::header::ContentType::plaintext(),
                     header_map: Some(header_map),
                 }
             }
@@ -125,15 +143,22 @@ pub async fn header_check(
         for tag in v {
             if tag.matches(&hash).await.unwrap_or(false) {
                 content = Content::None;
-                status = Status::NotModified;
+                status = actix_web::http::StatusCode::NOT_MODIFIED;
                 break
             }
         }
     }
     // Check for If-Match header
-    if request_headers.headers.contains("If-Match") {
+    if request_headers.headers.get(actix_web::http::header::IF_MATCH).is_some() {
         let mut any_match = false;
-        for i in request_headers.headers.get("If-Match") {
+        for i in request_headers.headers.get_all("If-Match") {
+            let i = match i.to_str(){
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!("Couldn't create string from a header-value '{}': {err}", String::from_utf8_lossy(i.as_bytes()));
+                    continue;
+                }
+            };
             let v = match ETagValidator::parse(i) {
                 Some(ETagValidator::Any) => {
                     any_match = true;
@@ -146,13 +171,19 @@ pub async fn header_check(
                     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                     core::mem::swap(start, next);
 
-                    header_map.remove_all();
-                    header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+                    header_map.clear();
+
+                    match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                        Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                        Err(err) => {
+                            tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                        }
+                    }
 
                     return Return {
-                        status: Status::BadRequest,
+                        status: actix_web::http::StatusCode::BAD_REQUEST,
                         content: Content::String(format!("Bad If-Match header: {i}")),
-                        content_type: ContentType::Text,
+                        content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: Some(header_map),
                     }
                 }
@@ -167,13 +198,19 @@ pub async fn header_check(
             }
         }
         if !any_match {
-            header_map.remove_all();
-            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+            header_map.clear();
+
+            match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                Err(err) => {
+                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                }
+            }
 
             return Return{
-                status: Status::PreconditionFailed,
+                status: actix_web::http::StatusCode::PRECONDITION_FAILED,
                 content: Content::None,
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: Some(header_map),
             }
         }
@@ -182,25 +219,38 @@ pub async fn header_check(
 
     // Check for If-Unmodified-Since and If-Modified-Since
     if
-    request_headers.headers.contains("If-Unmodified-Since") ||
+        request_headers.headers.get(actix_web::http::header::IF_UNMODIFIED_SINCE).is_some() ||
         //When used in combination with If-None-Match, it is ignored - https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-Modified-Since
-        (!contains_none_match && request_headers.headers.contains("If-Modified-Since"))
+        (!contains_none_match && request_headers.headers.get(actix_web::http::header::IF_MODIFIED_SINCE).is_some())
     {
         if let Some(modification_datetime) = modification_datetime {
             let modification_datetime = chrono::DateTime::<chrono::Utc>::from(modification_datetime);
             if !contains_none_match {
-                for i in request_headers.headers.get("If-Modified-Since") {
+                for i in request_headers.headers.get_all("If-Modified-Since") {
+                    let i = match i.to_str(){
+                        Ok(v) => v,
+                        Err(err) => {
+                            tracing::warn!("Couldn't create string from a header-value '{}': {err}", String::from_utf8_lossy(i.as_bytes()));
+                            continue;
+                        }
+                    };
                     match chrono::DateTime::parse_from_rfc2822(i) {
                         Ok(http_time) => {
                             if http_time > modification_datetime {
-                                status = Status::NotModified;
+                                status = actix_web::http::StatusCode::NOT_MODIFIED;
 
                                 *next = Instant::now();
                                 timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                                 tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                                 core::mem::swap(start, next);
 
-                                header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+
+                                match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                                    Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                                    Err(err) => {
+                                        tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                                    }
+                                }
 
                                 return Return{
                                     status,
@@ -216,30 +266,49 @@ pub async fn header_check(
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
 
-                            header_map.remove_all();
-                            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+                            header_map.clear();
+
+                            match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                                Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                                Err(err) => {
+                                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                                }
+                            }
 
                             return Return{
-                                status: Status::BadRequest,
+                                status: actix_web::http::StatusCode::BAD_REQUEST,
                                 content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
-                                content_type: ContentType::Text,
+                                content_type: actix_web::http::header::ContentType::plaintext(),
                                 header_map: Some(header_map),
                             }
                         }
                     }
                 }
             }
-            for i in request_headers.headers.get("If-Unmodified-Since") {
+            for i in request_headers.headers.get_all("If-Unmodified-Since") {
+                let i = match i.to_str(){
+                    Ok(v) => v,
+                    Err(err) => {
+                        tracing::warn!("Couldn't create string from a header-value '{}': {err}", String::from_utf8_lossy(i.as_bytes()));
+                        continue;
+                    }
+                };
                 match chrono::DateTime::parse_from_rfc2822(i) {
                     Ok(http_time) => {
                         if http_time <= modification_datetime {
-                            status = Status::PreconditionFailed;
+                            status = actix_web::http::StatusCode::PRECONDITION_FAILED;
 
                             *next = Instant::now();
                             timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                             tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                             core::mem::swap(start, next);
-                            header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+
+                            match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                                Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                                Err(err) => {
+                                    tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                                }
+                            }
 
                             return Return{
                                 status,
@@ -254,13 +323,19 @@ pub async fn header_check(
                         timings.push_iter_nodelim([r#"condHeader;dur="#, (*next-*start).as_server_timing_duration().to_string().as_str(), r#";desc="Parsing,Validation and Evaluation of conditional request Headers""#]);
                         tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
                         core::mem::swap(start, next);
-                        header_map.remove_all();
-                        header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+                        header_map.clear();
+
+                        match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+                            Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+                            Err(err) => {
+                                tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+                            }
+                        }
 
                         return Return{
-                            status: Status::BadRequest,
+                            status: actix_web::http::StatusCode::BAD_REQUEST,
                             content: Content::String(format!("Invalid value '{i}' in If-Modified-Since header: {err}")),
-                            content_type: ContentType::Text,
+                            content_type: actix_web::http::header::ContentType::plaintext(),
                             header_map: Some(header_map),
                         }
                     }
@@ -268,9 +343,9 @@ pub async fn header_check(
             }
         } else {
             return Return{
-                status: Status::BadRequest,
+                status: actix_web::http::StatusCode::BAD_REQUEST,
                 content: Content::String(modification_err.iter().map(|v|format!("Could not get Modification time: {v}")).collect::<Vec<_>>().join("\n")),
-                content_type: ContentType::Text,
+                content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: Some(header_map),
             }
         }
@@ -280,7 +355,12 @@ pub async fn header_check(
     tracing::info!("get_repo_file: {repo}: header checks took {}µs", (*next-*start).as_micros());
     core::mem::swap(start, next);
 
-    header_map.add(rocket::http::Header::new("Server-Timing", timings.value));
+    match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
+        Ok(v) => {header_map.append(crate::SERVER_TIMINGS, v);}
+        Err(err) => {
+            tracing::warn!("Cannot convert '{}' to a header-value: {err}", timings.value);
+        }
+    }
 
     Return {
         status,

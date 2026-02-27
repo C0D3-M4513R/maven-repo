@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use rocket::http::{ContentType, Status};
 use crate::status::{Content, Return};
 
 #[derive(Copy, Clone, Debug)]
@@ -36,11 +35,11 @@ pub enum GetRepoFileError{
     FileStartsWithDot,
 }
 impl GetRepoFileError {
-    pub const fn to_return(self) -> Return {
+    pub fn to_return(self) -> Return {
         Return {
             status: self.get_status_code(),
             content: self.get_err_content(),
-            content_type: ContentType::Text,
+            content_type: actix_web::http::header::ContentType::plaintext(),
             header_map: None,
         }
     }
@@ -77,41 +76,41 @@ impl GetRepoFileError {
     }
 
     //noinspection RsReplaceMatchExpr - Replacement suggestion makes function non-const
-    pub const fn get_status_code(self) -> Status {
+    pub const fn get_status_code(self) -> actix_web::http::StatusCode {
         match self.allowed_status_codes_slice().first().copied() {
             Some(v) => v,
-            None => Status::InternalServerError
+            None => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
         }
     }
-    pub fn allowed_status_codes(self) -> HashSet<Status> {
+    pub fn allowed_status_codes(self) -> HashSet<actix_web::http::StatusCode> {
         HashSet::from_iter(self.allowed_status_codes_slice().into_iter().copied())
     }
-    pub const fn allowed_status_codes_slice(self) -> &'static [Status] {
+    pub const fn allowed_status_codes_slice(self) -> &'static [actix_web::http::StatusCode] {
         match self {
-            Self::MainConfigError =>                &[Status::InternalServerError],
-            Self::OpenConfig =>                     &[Status::InternalServerError],
-            Self::ReadConfig =>                     &[Status::InternalServerError],
-            Self::ParseConfig =>                    &[Status::InternalServerError],
-            Self::NotFound =>                       &[Status::NotFound, Status::InternalServerError],
-            Self::OpenFile =>                       &[Status::InternalServerError],
-            Self::ReadDirectory =>                  &[Status::InternalServerError],
-            Self::ReadDirectoryEntry =>             &[Status::InternalServerError],
-            Self::ReadDirectoryEntryNonUTF8Name =>  &[Status::BadRequest, Status::InternalServerError],
-            Self::ReadDirectoryEntryFileType =>     &[Status::BadRequest, Status::InternalServerError],
-            Self::Panicked =>                       &[Status::InternalServerError],
-            Self::InvalidUTF8 =>                    &[Status::BadRequest, Status::InternalServerError],
-            Self::BadRequestPath =>                 &[Status::BadRequest, Status::InternalServerError],
-            Self::UpstreamRequestError =>           &[Status::InternalServerError],
-            Self::UpstreamBodyReadError =>          &[Status::InternalServerError],
-            Self::FileCreateFailed =>               &[Status::InternalServerError],
-            Self::FileWriteFailed =>                &[Status::InternalServerError],
-            Self::FileFlushFailed =>                &[Status::InternalServerError],
-            Self::FileSeekFailed =>                 &[Status::InternalServerError],
-            Self::FileLockFailed =>                 &[Status::InternalServerError],
-            Self::UpstreamStatus =>                 &[Status::InternalServerError],
-            Self::UpstreamFileTooLarge =>           &[Status::InsufficientStorage, Status::InternalServerError],
-            Self::PutFileTooLarge =>                &[Status::PayloadTooLarge, Status::InternalServerError],
-            Self::FileStartsWithDot =>              &[Status::BadRequest, Status::NotFound, Status::InternalServerError],
+            Self::MainConfigError =>                &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::OpenConfig =>                     &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::ReadConfig =>                     &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::ParseConfig =>                    &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::NotFound =>                       &[actix_web::http::StatusCode::NOT_FOUND, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::OpenFile =>                       &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::ReadDirectory =>                  &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::ReadDirectoryEntry =>             &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::ReadDirectoryEntryNonUTF8Name =>  &[actix_web::http::StatusCode::BAD_REQUEST, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::ReadDirectoryEntryFileType =>     &[actix_web::http::StatusCode::BAD_REQUEST, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::Panicked =>                       &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::InvalidUTF8 =>                    &[actix_web::http::StatusCode::BAD_REQUEST, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::BadRequestPath =>                 &[actix_web::http::StatusCode::BAD_REQUEST, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::UpstreamRequestError =>           &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::UpstreamBodyReadError =>          &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::FileCreateFailed =>               &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::FileWriteFailed =>                &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::FileFlushFailed =>                &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::FileSeekFailed =>                 &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::FileLockFailed =>                 &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::UpstreamStatus =>                 &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::UpstreamFileTooLarge =>           &[actix_web::http::StatusCode::INSUFFICIENT_STORAGE, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::PutFileTooLarge =>                &[actix_web::http::StatusCode::PAYLOAD_TOO_LARGE, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            Self::FileStartsWithDot =>              &[actix_web::http::StatusCode::BAD_REQUEST, actix_web::http::StatusCode::NOT_FOUND, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
         }
     }
 }
