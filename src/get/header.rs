@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 use base64::Engine;
 use tokio::time::Instant;
 use crate::etag::ETagValidator;
@@ -9,7 +10,7 @@ use crate::status::{Content, Return};
 use crate::timings::ServerTimings;
 
 pub async fn header_check(
-    repo: &str,
+    repo: &Arc<str>,
     path: &Path,
     config: &Repository,
     str_path: &str,

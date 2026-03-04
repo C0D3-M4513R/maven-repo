@@ -1,4 +1,5 @@
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 use chrono::{Datelike, Timelike};
 use tokio::fs::File;
@@ -275,7 +276,7 @@ impl<'a> PathInfo<'a> {
 
         Ok((metadata_path, file, metadata, contents))
     }
-    pub async fn get_merged_metadata(&self, repo: &str, action: actix_web::http::Method) -> Result<Vec<MavenMetadataReturn>, Return> {
+    pub async fn get_merged_metadata(&self, repo: &Arc<str>, action: actix_web::http::Method) -> Result<Vec<MavenMetadataReturn>, Return> {
         let mut out = Vec::new();
         let (path, file, mut metadata, _) = self.get_metadata_int(repo, false, true).await?;
         

@@ -10,7 +10,7 @@ use crate::RequestHeaders;
 use crate::server_timings::AsServerTimingDuration;
 use crate::timings::ServerTimings;
 
-pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn resolve_impl(repo: &Arc<str>, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
@@ -61,7 +61,7 @@ pub async fn resolve_impl(repo: &str, path: &Path, str_path: &str, config: &Arc<
     let str_path = Arc::<str>::from(str_path);
     for (repo, repo_config) in &configs {
         let display_dir = !config.hide_directory_listings.unwrap_or(repo_config.hide_directory_listings.unwrap_or(false));
-        js.spawn(serve_repository_stored_path(Path::new(&repo).join(&path), display_dir, request_headers.has_trailing_slash, repo_config.clone(), str_path.clone()));
+        js.spawn(serve_repository_stored_path(Path::new(&**repo).join(&path), display_dir, request_headers.has_trailing_slash, repo_config.clone(), str_path.clone()));
     }
 
     if let Some(v) = check_result(&mut js).await {

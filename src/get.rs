@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::FileType;
 use std::path::{Component, PathBuf};
+use std::sync::Arc;
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
 use crate::repository::get_repo_config;
@@ -34,7 +35,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
                 Some(Component::Normal(v)) => {
                     match v.to_str() {
                         Some(v) => {
-                            repo = v;
+                            repo = Arc::from(v);
                             break;
                         },
                         None => return Return{
@@ -119,7 +120,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     tracing::info!("get_repo_file: {repo}: path checks took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let config = match get_repo_config(Cow::Borrowed(repo)).await {
+    let config = match get_repo_config(&repo).await {
         Ok(v) => v,
         Err(e) => {
             let mut ret = e.to_return();
@@ -154,7 +155,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let resolve_impl = resolve_impl(repo, path.as_path(), str_path, &config, &mut timings, &request_headers).await;
+    let resolve_impl = resolve_impl(&repo, path.as_path(), str_path, &config, &mut timings, &request_headers).await;
     next = Instant::now();
     timings.push_iter_nodelim([r#"resolveImpl;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Total Resolve Implementation""#]);
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());
@@ -165,7 +166,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
         Ok(StoredRepoPath::IsADir) => {
             let mut ret = Return {
                 status: actix_web::http::StatusCode::PERMANENT_REDIRECT,
-                content: Content::None,
+                content: Content::Empty,
                 content_type: actix_web::http::header::ContentType::plaintext(),
                 header_map: None,
             };
@@ -238,7 +239,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     };
     timings.append(&mut timing);
 
-    let mut ret = header_check(repo, &path, &config, str_path, timings, content, dir_listing, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
+    let mut ret = header_check(&repo, &path, &config, str_path, timings, content, dir_listing, &request_headers, hash, &metadata, header_map, &mut start, &mut next).await;
     config.apply_cache_control(&mut ret);
     ret
 }

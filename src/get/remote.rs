@@ -16,7 +16,7 @@ use crate::timings::ServerTimings;
 pub async fn serve_remote_repository(
     remote: RemoteUpstream,
     str_path: Arc<str>,
-    repo: String,
+    repo: Arc<str>,
     path: Arc<Path>,
     config: Arc<Repository>,
     request_url: Arc<str>,
@@ -57,7 +57,7 @@ pub async fn serve_remote_repository(
         timings.push_iter_nodelim(["resolveImplRemoteRequestHead;dur=", (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Remote: Send Request to Remote and wait for Headers""#]);
         core::mem::swap(&mut start, &mut next);
 
-        let path = Path::new(&repo).join(path);
+        let path = Path::new(&*repo).join(path);
         if let Some(parent) = path.parent() {
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
                 tracing::error!("Error creating directories to {}: {err}", path.display());

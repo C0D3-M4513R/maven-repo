@@ -14,6 +14,7 @@ pub enum Content {
     Response(reqwest::Response),
     Str(&'static str),
     String(String),
+    Empty,
     None,
 }
 impl actix_web::body::MessageBody for Content {
@@ -40,6 +41,7 @@ impl actix_web::body::MessageBody for Content {
             },
             Self::Str(s) => BodySize::Sized(s.len() as u64),
             Self::String(s) => BodySize::Sized(s.len() as u64),
+            Self::Empty => BodySize::Sized(0),
             Self::None => BodySize::None,
         }
     }
@@ -51,7 +53,7 @@ impl actix_web::body::MessageBody for Content {
             Self::Response(resp) => resp.bytes_stream().poll_next_unpin(cx).map_err(::std::io::Error::other),
             Self::Str(s) => std::task::Poll::Ready(Some(Ok(Bytes::from_static(s.as_bytes())))),
             Self::String(s) => std::task::Poll::Ready(Some(Ok(Bytes::from(s)))),
-            Self::None => std::task::Poll::Ready(None),
+            Self::None | Self::Empty => std::task::Poll::Ready(None),
         }
     }
 
@@ -65,7 +67,7 @@ impl actix_web::body::MessageBody for Content {
             Self::Response(_) => Err(self),
             Self::Str(s) => Ok(Bytes::from_static(s.as_bytes())),
             Self::String(s) => Ok(Bytes::from(s)),
-            Self::None => Ok(Bytes::new()),
+            Self::None | Self::Empty => Ok(Bytes::new()),
         }
     }
 }
@@ -109,7 +111,7 @@ impl actix_web::ResponseError for Return {
             Content::Mmap(_) | Content::Response(_) => actix_web::body::BoxBody::new(()),
             Content::Str(s) => actix_web::body::BoxBody::new(*s),
             Content::String(s) => actix_web::body::BoxBody::new(s.clone()),
-            Content::None => actix_web::body::BoxBody::new(()),
+            Content::None | Content::Empty => actix_web::body::BoxBody::new(()),
         });
         if let Some(header_map) = &self.header_map {
             for (name, value) in header_map{

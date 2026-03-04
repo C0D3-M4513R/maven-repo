@@ -1,7 +1,7 @@
-use std::borrow::Cow;
 use std::io::{Cursor, Error, ErrorKind};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use digest::Digest;
 use futures::TryStreamExt;
@@ -28,7 +28,7 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
                 Some(Component::Normal(v)) => {
                     match v.to_str() {
                         Some(v) => {
-                            repo = v;
+                            repo = Arc::from(v);
                             break;
                         },
                         None => return Return{
@@ -75,7 +75,7 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
     let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
-    let config = match get_repo_config(Cow::Borrowed(repo)).await {
+    let config = match get_repo_config(&repo).await {
         Ok(v) => v,
         Err(e) => return e.to_return(),
     };
@@ -99,12 +99,12 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
         Ok(v) => v,
         Err(err) => return err,
     };
-    let metadata = match info.get_merged_metadata(repo, actix_web::http::Method::PUT).await {
+    let metadata = match info.get_merged_metadata(&repo, actix_web::http::Method::PUT).await {
         Ok(v) => v,
         Err(err) => return err,
     };
 
-    match create_file_dirs(repo, &path).await {
+    match create_file_dirs(&repo, &path).await {
         Ok(()) => {},
         Err(err) => return err,
     }
@@ -168,8 +168,8 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     }
 }
 
-async fn create_file_dirs(repo: &str, path: &Path) -> Result<(), Return> {
-    let file_path = Path::new(repo).join(&path);
+async fn create_file_dirs(repo: &Arc<str>, path: &Path) -> Result<(), Return> {
+    let file_path = Path::new(&**repo).join(&path);
     let parent = match file_path.parent() {
         Some(v) => v,
         None => return Err(Return {

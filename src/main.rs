@@ -54,7 +54,7 @@ static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
         .expect("Client to be initialized")
 
 });
-static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<String, (tokio::fs::File, Arc<Repository>)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
+static REPOSITORIES:LazyLock<tokio::sync::RwLock<HashMap<Arc<str>, (tokio::fs::File, Arc<Repository>)>>> = LazyLock::new(||tokio::sync::RwLock::new(HashMap::new()));
 mod private {
     use std::io::SeekFrom;
     use std::sync::Arc;

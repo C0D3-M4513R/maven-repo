@@ -70,7 +70,6 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
 
                 let file = std::fs::OpenOptions::new()
                     .read(true)
-                    .write(true)
                     .open(&path)?;
 
                 next = Instant::now();
@@ -86,13 +85,9 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
                     core::mem::swap(&mut start, &mut next);
                 }
 
-                let map = unsafe { memmap2::Mmap::map(&file) }?;
+                let map = unsafe { memmap2::MmapOptions::new().populate().no_reserve_swap().map_copy_read_only(&file) }?;
                 map.advise(memmap2::Advice::Sequential)?;
                 map.advise(memmap2::Advice::WillNeed)?;
-                #[cfg(target_os = "linux")]
-                {
-                    map.advise(memmap2::Advice::PopulateRead)?;
-                }
                 next = Instant::now();
                 timings.push_iter_nodelim([r#"resolveImplLocalMemMapFile;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Impl: Local: Memory Map file""#]);
                 core::mem::swap(&mut start, &mut next);

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::str::FromStr;
@@ -97,7 +96,7 @@ pub enum Upstream{
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalUpstream{
-    pub path: String, 
+    pub path: Arc<str>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Header{
@@ -194,8 +193,8 @@ impl Repository {
 }
 
 
-pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Arc<Repository>, GetRepoFileError> {
-    match crate::REPOSITORIES.read().await.get(repo.as_ref()) {
+pub async fn get_repo_config(repo: &Arc<str>) -> Result<Arc<Repository>, GetRepoFileError> {
+    match crate::REPOSITORIES.read().await.get(repo) {
         Some((_, v)) => {
             tracing::info!("Using cached repo config");
             return Ok(v.clone())
@@ -245,7 +244,7 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Arc<Repository>, GetR
     };
     config.merge(&main_config);
     let config = Arc::new(config);
-    match crate::REPOSITORIES.write().await.insert(repo.clone().into_owned(), (file, config.clone())) {
+    match crate::REPOSITORIES.write().await.insert(repo.clone(), (file, config.clone())) {
         None => {},
         Some(_) => {
             tracing::info!("A cached config already exists for {repo}.");
@@ -253,14 +252,15 @@ pub async fn get_repo_config(repo: Cow<'_, str>) -> Result<Arc<Repository>, GetR
     }
     Ok(config)
 }
-pub async fn get_repo_look_locations(repo: &str, config: &Arc<Repository>) -> (Vec<(String, Arc<Repository>)>, Vec<GetRepoFileError>) {
+const OUT_VEC_STACKSIZE:usize = 32;
+pub async fn get_repo_look_locations(repo: &Arc<str>, config: &Arc<Repository>) -> (smallvec::SmallVec<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE]>, Vec<GetRepoFileError>) {
     let mut start = Instant::now();
     let mut next;
 
     let mut errors = Vec::new();
-    let mut out = Vec::new();
+    let mut out = smallvec::SmallVec::new();
 
-    out.push((repo.to_owned(), config.clone()));
+    out.push((repo.clone(), config.clone()));
     next = Instant::now();
     tracing::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
@@ -269,11 +269,11 @@ pub async fn get_repo_look_locations(repo: &str, config: &Arc<Repository>) -> (V
     let mut visited = HashSet::new();
 
     async fn check_repo(
-        js: &mut JoinSet<Result<(String, Arc<Repository>), GetRepoFileError>>,
-        repo: &str,
+        js: &mut JoinSet<Result<(Arc<str>, Arc<Repository>), GetRepoFileError>>,
+        repo: &Arc<str>,
         config: Arc<Repository>,
-        visited: &mut HashSet<String>,
-        out: &mut Vec<(String, Arc<Repository>)>
+        visited: &mut HashSet<Arc<str>>,
+        out: &mut smallvec::SmallVec<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE ]>
     ) {
         let mut configs = vec![(repo.to_owned(), config)];
         let repository_cache = crate::REPOSITORIES.read().await;
@@ -292,7 +292,7 @@ pub async fn get_repo_look_locations(repo: &str, config: &Arc<Repository>) -> (V
                         None => {
                             let path = upstream.path.clone();
                             js.spawn(async move {
-                                let out = get_repo_config(Cow::Borrowed(path.as_str())).await?;
+                                let out = get_repo_config(&path).await?;
                                 Ok((path, out))
                             });
                         }
