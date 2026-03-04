@@ -179,16 +179,19 @@ async fn async_main() -> anyhow::Result<()> {
             tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
         }});
     }
-    let  _ = actix_web::HttpServer::new(||
+    let server = actix_web::HttpServer::new(||
         actix_web::App::new()
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::NormalizePath::new(actix_web::middleware::TrailingSlash::MergeOnly))
             .default_service(actix_web::web::route().to(repo_file))
-    )
-        // .bind_uds("server.socket")?
-        .bind((core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST), 8080))?
-        .run()
-        .await?;
+    );
+
+    #[cfg(feature = "socket")]
+    let server = server.bind_uds("server.socket")?;
+    #[cfg(not(feature = "socket"))]
+    let server = server.bind((core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST), 8080))?;
+
+    server.run().await?;
     Ok(())
 }
 struct RequestHeaders {

@@ -45,4 +45,5 @@ strip = true
 
 [features]
 default = ["locking"]
+socket = []
 locking = []
