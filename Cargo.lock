@@ -1220,7 +1220,6 @@ dependencies = [
  "actix-web",
  "anyhow",
  "arc-swap",
- "base64",
  "bcrypt",
  "blake3",
  "chrono",

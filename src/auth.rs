@@ -1,5 +1,4 @@
 use std::time::Instant;
-use base64::Engine;
 use crate::status::{Content, Return};
 
 #[derive(Debug)]
@@ -42,7 +41,7 @@ impl actix_web::FromRequest for BasicAuthentication {
                 header_map: Default::default(),
             }))
         };
-        let auth = match base64::engine::general_purpose::STANDARD.decode(auth) {
+        let auth = match data_encoding::BASE64.decode(auth.as_bytes()) {
             Ok(v) => v,
             Err(err) => {
                 tracing::error!("Request with Basic Authorization header, but invalid Base64: {err}");

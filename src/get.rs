@@ -10,7 +10,6 @@ use std::path::{Component, PathBuf};
 use std::sync::Arc;
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
-use crate::repository::get_repo_config;
 use crate::status::{Content, Return};
 use crate::err::GetRepoFileError;
 use crate::{RequestHeaders, REPOSITORIES};

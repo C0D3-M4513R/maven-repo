@@ -8,7 +8,7 @@ use actix_web::dev::Payload;
 use actix_web::HttpRequest;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
-use crate::repository::{Repository, OUT_VEC_STACKSIZE};
+use crate::repository::{Repository};
 use crate::status::{Content, Return};
 
 mod get;

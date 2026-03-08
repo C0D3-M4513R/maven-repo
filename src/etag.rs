@@ -1,5 +1,3 @@
-use base64::Engine;
-
 pub struct ETag {
     #[allow(dead_code)]
     pub weak: bool,
@@ -47,7 +45,7 @@ impl ETag {
     pub async fn matches(&self, hash: &blake3::Hash) -> Option<bool> {
         match self.tag.strip_prefix("blake3-") {
             Some(tag) =>{
-                let tag = base64::engine::general_purpose::STANDARD.decode(tag).ok()?;
+                let tag = data_encoding::BASE64.decode(tag.as_bytes()).ok()?;
                 Some(tag.len() == hash.as_bytes().len() && tag == hash.as_bytes())
             }
             None => {

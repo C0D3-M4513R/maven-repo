@@ -1,6 +1,5 @@
 use std::path::Path;
 use std::sync::Arc;
-use base64::Engine;
 use tokio::time::Instant;
 use crate::etag::ETagValidator;
 use crate::repository::Repository;
@@ -31,7 +30,7 @@ pub async fn header_check(
         actix_web::http::header::ContentType::octet_stream()
     };
 
-    let etag = format!(r#""blake3-{}""#,base64::engine::general_purpose::STANDARD.encode(hash.as_bytes()));
+    let etag = format!(r#""blake3-{}""#,::data_encoding::BASE64.encode(hash.as_bytes()));
     match actix_web::http::header::HeaderValue::from_str(etag.as_str()) {
         Ok(v) => {
             header_map.append(actix_web::http::header::ETAG, v);
