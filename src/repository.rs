@@ -1,14 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use serde_derive::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
-use tokio::task::JoinSet;
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
+use crate::RepositoryStore;
 use crate::status::{Content, Return};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -193,131 +191,50 @@ impl Repository {
 }
 
 
-pub async fn get_repo_config(repo: &Arc<str>) -> Result<Arc<Repository>, GetRepoFileError> {
-    match crate::REPOSITORIES.read().await.get(repo) {
-        Some((_, v)) => {
+pub fn get_repo_config(repo: &Arc<str>) -> Result<Arc<Repository>, GetRepoFileError> {
+    match crate::REPOSITORIES.load().get(repo.as_ref()) {
+        Some(v) => {
             tracing::info!("Using cached repo config");
-            return Ok(v.clone())
+            Ok(v.clone())
         },
-        None => {},
+        None => Err(GetRepoFileError::NotFound),
     }
-    let main_config = match crate::private::get_main_config().await{
-        Ok(v) => v,
-        Err(err) => {
-            tracing::error!("Error getting main repo config file: {err}");
-            return Err(GetRepoFileError::MainConfigError);
-        }
-    };
-    tracing::info!("Getting repo config");
-    let mut file = match tokio::fs::File::open(format!(".{repo}.json")).await {
-        Err(err) => {
-            return match err.kind() {
-                ErrorKind::NotFound => Err(GetRepoFileError::NotFound),
-                err => {
-                    tracing::error!("Error opening repo config file: {err}");
-                    Err(GetRepoFileError::OpenConfig)
-                },
-            }
-        }
-        Ok(v) => v,
-    };
-    let mut config = String::new();
-    match file.read_to_string(&mut config).await {
-        Err(err) => {
-            return match err.kind() {
-                ErrorKind::NotFound => Err(GetRepoFileError::NotFound),
-                err => {
-                    tracing::error!("Error reading repo config file: {err}");
-                    Err(GetRepoFileError::ReadConfig)
-                },
-            };
-        }
-        Ok(v) => v,
-    };
-    let config = config;
-    let mut config:Repository = match serde_json::from_str(&config) {
-        Err(err) => {
-            tracing::error!("Error parsing repo config: {err}");
-            return Err(GetRepoFileError::ParseConfig);
-        }
-        Ok(v) => v,
-    };
-    config.merge(&main_config);
-    let config = Arc::new(config);
-    match crate::REPOSITORIES.write().await.insert(repo.clone(), (file, config.clone())) {
-        None => {},
-        Some(_) => {
-            tracing::info!("A cached config already exists for {repo}.");
-        }
-    }
-    Ok(config)
 }
-const OUT_VEC_STACKSIZE:usize = 32;
-pub async fn get_repo_look_locations(repo: &Arc<str>, config: &Arc<Repository>) -> (smallvec::SmallVec<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE]>, Vec<GetRepoFileError>) {
+pub const OUT_VEC_STACKSIZE:usize = 32;
+pub fn get_repo_look_locations(repo: &Arc<str>, repos: &arc_swap::Guard<Arc<RepositoryStore>>, config: &Arc<Repository>) -> (smallvec::SmallVec<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE]>, Vec<GetRepoFileError>) {
     let mut start = Instant::now();
     let mut next;
 
     let mut errors = Vec::new();
+    let mut to_visit = smallvec::SmallVec::<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE]>::new();
     let mut out = smallvec::SmallVec::new();
 
     out.push((repo.clone(), config.clone()));
-    next = Instant::now();
-    tracing::info!("{repo}: get_repo_config took {}µs", (next-start).as_micros());
-    core::mem::swap(&mut start, &mut next);
 
-    let mut js = JoinSet::new();
     let mut visited = HashSet::new();
 
-    async fn check_repo(
-        js: &mut JoinSet<Result<(Arc<str>, Arc<Repository>), GetRepoFileError>>,
-        repo: &Arc<str>,
-        config: Arc<Repository>,
-        visited: &mut HashSet<Arc<str>>,
-        out: &mut smallvec::SmallVec<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE ]>
-    ) {
-        let mut configs = vec![(repo.to_owned(), config)];
-        let repository_cache = crate::REPOSITORIES.read().await;
-        while let Some((repo, config)) = configs.pop() {
-            for upstream in &config.upstreams{
-                let upstream = match upstream {
-                    Upstream::Local(upstream) => upstream,
-                    Upstream::Remote(_) => continue,
-                };
-                if visited.insert(upstream.path.clone()) {
-                    match repository_cache.get(&upstream.path) {
-                        Some((_, repo)) => {
-                            out.push((upstream.path.clone(), repo.clone()));
-                            configs.push((upstream.path.clone(), repo.clone()));
-                        },
-                        None => {
-                            let path = upstream.path.clone();
-                            js.spawn(async move {
-                                let out = get_repo_config(&path).await?;
-                                Ok((path, out))
-                            });
-                        }
-                    }
-                } else {
-                    tracing::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
-                }
+    to_visit.push((repo.clone(), config.clone()));
+
+    while let Some((repo, config)) = to_visit.pop() {
+        for upstream in &config.upstreams{
+            let upstream = match upstream {
+                Upstream::Local(upstream) => upstream,
+                Upstream::Remote(_) => continue,
             };
-        }
-    }
-    check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
-    while let Some(task) = js.join_next().await {
-        match task {
-            Ok(Ok((path, config))) => {
-                check_repo(&mut js, &repo, config.clone(), &mut visited, &mut out).await;
-                out.push((path, config));
-            },
-            Ok(Err(v)) => {
-                errors.push(v);
-            },
-            Err(err) => {
-                tracing::error!("{repo}: Panicked whilst trying to resolve repo config: {err}");
-                errors.push(GetRepoFileError::Panicked);
+            if visited.insert(upstream.path.clone()) {
+                match repos.get(upstream.path.as_ref()) {
+                    Some(repo) => {
+                        out.push((upstream.path.clone(), repo.clone()));
+                        to_visit.push((upstream.path.clone(), repo.clone()));
+                    },
+                    None => {
+                        errors.push(GetRepoFileError::NotFound);
+                    }
+                }
+            } else {
+                tracing::info!("{repo}: Skipping duplicate local upstream: {}", &upstream.path)
             }
-        }
+        };
     }
     next = Instant::now();
     tracing::info!("{repo}: collecting all configs took {}µs", (next-start).as_micros());

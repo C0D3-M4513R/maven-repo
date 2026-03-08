@@ -13,7 +13,7 @@ use crate::auth::BasicAuthentication;
 use crate::repository::get_repo_config;
 use crate::status::{Content, Return};
 use crate::err::GetRepoFileError;
-use crate::RequestHeaders;
+use crate::{RequestHeaders, REPOSITORIES};
 use crate::server_timings::AsServerTimingDuration;
 
 use local::serve_repository_stored_path;
@@ -27,7 +27,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     let path = uri.path();
     let path = path.strip_prefix("/").unwrap_or(path);
     let path = PathBuf::from(path);
-    let repo;
+    let repo:Arc<str>;
     let path = {
         let mut iter = path.components();
         loop {
@@ -120,10 +120,17 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     tracing::info!("get_repo_file: {repo}: path checks took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let config = match get_repo_config(&repo).await {
-        Ok(v) => v,
-        Err(e) => {
-            let mut ret = e.to_return();
+    let repos = REPOSITORIES.load();
+
+    next = Instant::now();
+    timings.push_iter_nodelim([r#"getRepositoryConfigStore;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Get Repo Config Store""#]);
+    tracing::info!("get_repo_file: {repo}: get_repository_config_store took {}µs", (next-start).as_micros());
+    core::mem::swap(&mut start, &mut next);
+
+    let config = match repos.get(repo.as_ref()) {
+        Some(v) => v,
+        None => {
+            let mut ret = GetRepoFileError::NotFound.to_return();
 
             match actix_web::http::header::HeaderValue::from_str(timings.value.as_str()) {
                 Ok(v) => {ret.header_map.get_or_insert_default().append(crate::SERVER_TIMINGS, v);}
@@ -155,7 +162,7 @@ pub async fn get_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     tracing::info!("get_repo_file: {repo}: auth check took {}µs", (next-start).as_micros());
     core::mem::swap(&mut start, &mut next);
 
-    let resolve_impl = resolve_impl(&repo, path.as_path(), str_path, &config, &mut timings, &request_headers).await;
+    let resolve_impl = resolve_impl(&repo, path.as_path(), str_path, &repos, &config, &mut timings, &request_headers).await;
     next = Instant::now();
     timings.push_iter_nodelim([r#"resolveImpl;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Total Resolve Implementation""#]);
     tracing::info!("get_repo_file: {repo}: get_repo_file_impl check took {}µs", (next-start).as_micros());

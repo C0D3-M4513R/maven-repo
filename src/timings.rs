@@ -3,9 +3,9 @@ pub struct ServerTimings {
     pub value: String,
 }
 impl ServerTimings {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            value: String::new(),
+            value: String::with_capacity(512),
         }
     }
     #[allow(dead_code)]

@@ -6,15 +6,15 @@ use tokio::time::Instant;
 use crate::err::GetRepoFileError;
 use crate::get::{serve_remote_repository, serve_repository_stored_path, StoredRepoPath};
 use crate::repository::{get_repo_look_locations, Repository, Upstream};
-use crate::RequestHeaders;
+use crate::{RepositoryStore, RequestHeaders};
 use crate::server_timings::AsServerTimingDuration;
 use crate::timings::ServerTimings;
 
-pub async fn resolve_impl(repo: &Arc<str>, path: &Path, str_path: &str, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn resolve_impl(repo: &Arc<str>, path: &Path, str_path: &str, repos: &arc_swap::Guard<Arc<RepositoryStore>>, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
-    let (configs, mut errors) = get_repo_look_locations(repo, &config).await;
+    let (configs, mut errors) = get_repo_look_locations(repo, repos, &config);
     next = Instant::now();
     timings.push_iter_nodelim([r#"resolveImplGetLocalRepoConfigs;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Fetch all local upstream repo configs""#]);
     tracing::info!("get_repo_file_impl: {repo}: get_repo_look_locations took {}µs", (next-start).as_micros());

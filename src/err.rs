@@ -3,8 +3,6 @@ use crate::status::{Content, Return};
 
 #[derive(Copy, Clone, Debug)]
 pub enum GetRepoFileError{
-    MainConfigError,
-    OpenConfig,
     ReadConfig,
     ParseConfig,
 
@@ -48,8 +46,6 @@ impl GetRepoFileError {
     }
     pub const fn get_err(self) -> &'static str {
         match self {
-            Self::MainConfigError => "Error getting main config",
-            Self::OpenConfig => "Error opening repo config file",
             Self::ReadConfig => "Error reading repo config",
             Self::ParseConfig => "Error parsing repo config",
             Self::NotFound => "File or Directory could not be found",
@@ -87,8 +83,6 @@ impl GetRepoFileError {
     }
     pub const fn allowed_status_codes_slice(self) -> &'static [actix_web::http::StatusCode] {
         match self {
-            Self::MainConfigError =>                &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
-            Self::OpenConfig =>                     &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
             Self::ReadConfig =>                     &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
             Self::ParseConfig =>                    &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
             Self::NotFound =>                       &[actix_web::http::StatusCode::NOT_FOUND, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],

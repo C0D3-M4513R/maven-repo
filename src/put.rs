@@ -75,7 +75,7 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
     let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
-    let config = match get_repo_config(&repo).await {
+    let config = match get_repo_config(&repo) {
         Ok(v) => v,
         Err(e) => return e.to_return(),
     };
