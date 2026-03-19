@@ -238,7 +238,14 @@ impl actix_web::FromRequest for RequestHeaders {
     }
 }
 
-async fn repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthentication, Return>, request_headers: RequestHeaders, data: actix_web::web::Payload, method: actix_web::http::Method) -> Return {
+async fn repo_file(
+    req: actix_web::HttpRequest,
+    auth: Result<BasicAuthentication, Return>,
+    request_headers: RequestHeaders,
+    #[cfg_attr(not(feature = "token-auth"), allow(unused_variables))]
+    data: actix_web::web::Payload,
+    method: actix_web::http::Method
+) -> Return {
     match method {
         #[cfg(feature = "put")]
         actix_web::http::Method::PUT => put::put_repo_file(req, auth, data).await,
