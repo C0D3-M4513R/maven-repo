@@ -141,7 +141,7 @@ impl FileMetadata {
         let task = {
             let meta = self.clone();
             tokio::task::spawn_blocking(move ||{
-                let json = serde_json::to_string(&meta)?;
+                let json = serde_json::to_string_pretty(&meta)?;
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
