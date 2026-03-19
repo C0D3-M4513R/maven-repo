@@ -1,12 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 use serde_derive::{Deserialize, Serialize};
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
-use crate::RepositoryStore;
 use crate::status::{Content, Return};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -94,7 +92,7 @@ pub enum Upstream{
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalUpstream{
-    pub path: Arc<str>,
+    pub path: Box<str>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Header{
@@ -123,7 +121,7 @@ impl Header {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteUpstream{
-    pub url: String, 
+    pub url: Box<str>,
     pub timeout: Duration,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_fresh: Option<Duration>,
@@ -131,8 +129,8 @@ pub struct RemoteUpstream{
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Token{
-    pub hash: String,
-    pub paths: HashMap<String, PathAuthorization>,
+    pub hash: Box<str>,
+    pub paths: HashMap<Box<str>, PathAuthorization>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PathAuthorization{
@@ -191,29 +189,20 @@ impl Repository {
 }
 
 
-pub fn get_repo_config(repo: &Arc<str>) -> Result<Arc<Repository>, GetRepoFileError> {
-    match crate::REPOSITORIES.load().get(repo.as_ref()) {
-        Some(v) => {
-            tracing::info!("Using cached repo config");
-            Ok(v.clone())
-        },
-        None => Err(GetRepoFileError::NotFound),
-    }
-}
 pub const OUT_VEC_STACKSIZE:usize = 32;
-pub fn get_repo_look_locations(repo: &Arc<str>, repos: &arc_swap::Guard<Arc<RepositoryStore>>, config: &Arc<Repository>) -> (smallvec::SmallVec<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE]>, Vec<GetRepoFileError>) {
+pub fn get_repo_look_locations(repo: &'static str, config: &'static Repository) -> (smallvec::SmallVec<[(&'static str, &'static Repository); OUT_VEC_STACKSIZE]>, Vec<GetRepoFileError>) {
     let mut start = Instant::now();
     let mut next;
 
     let mut errors = Vec::new();
-    let mut to_visit = smallvec::SmallVec::<[(Arc<str>, Arc<Repository>); OUT_VEC_STACKSIZE]>::new();
+    let mut to_visit = smallvec::SmallVec::<[(&str, &Repository); OUT_VEC_STACKSIZE]>::new();
     let mut out = smallvec::SmallVec::new();
 
-    out.push((repo.clone(), config.clone()));
+    out.push((repo, config));
 
     let mut visited = HashSet::new();
 
-    to_visit.push((repo.clone(), config.clone()));
+    to_visit.push((repo, config));
 
     while let Some((repo, config)) = to_visit.pop() {
         for upstream in &config.upstreams{
@@ -222,10 +211,10 @@ pub fn get_repo_look_locations(repo: &Arc<str>, repos: &arc_swap::Guard<Arc<Repo
                 Upstream::Remote(_) => continue,
             };
             if visited.insert(upstream.path.clone()) {
-                match repos.get(upstream.path.as_ref()) {
+                match crate::REPOSITORIES.get(upstream.path.as_ref()) {
                     Some(repo) => {
-                        out.push((upstream.path.clone(), repo.clone()));
-                        to_visit.push((upstream.path.clone(), repo.clone()));
+                        out.push((&*upstream.path, repo));
+                        to_visit.push((&*upstream.path, repo));
                     },
                     None => {
                         errors.push(GetRepoFileError::NotFound);

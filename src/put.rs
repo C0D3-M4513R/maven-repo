@@ -1,3 +1,4 @@
+#![cfg(feature = "put")]
 use std::io::{Cursor, Error, ErrorKind};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;

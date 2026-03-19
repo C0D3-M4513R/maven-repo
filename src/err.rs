@@ -23,6 +23,7 @@ pub enum GetRepoFileError{
     UpstreamBodyReadError,
     UpstreamStatus,
     UpstreamFileTooLarge,
+    #[cfg(feature = "put")]
     PutFileTooLarge,
 
     FileCreateFailed,

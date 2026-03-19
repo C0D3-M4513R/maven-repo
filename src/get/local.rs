@@ -11,7 +11,7 @@ use crate::repository::Repository;
 use crate::server_timings::AsServerTimingDuration;
 use crate::timings::ServerTimings;
 
-pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_trailing_slash: bool, config: Arc<Repository>, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_trailing_slash: bool, config: &Repository, str_path: Arc<str>) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
     let mut errors = Vec::new();

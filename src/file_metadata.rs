@@ -107,7 +107,7 @@ impl FileMetadata {
                 Upstream::Remote(i) => i,
                 _ => continue,
             };
-            if self.url.starts_with(&i.url) {
+            if self.url.starts_with(&*i.url) {
                 return Some(i);
             }
         }
@@ -192,7 +192,7 @@ impl FileMetadata {
             let urls = config.upstreams.iter().flat_map(|v|match v {
                     Upstream::Remote(v) => Some(v),
                     _ => None
-                }).filter(|v|self_.url.starts_with(&v.url))
+                }).filter(|v|self_.url.starts_with(&*v.url))
                 .map(|v|(v.timeout, &*self_.url));
             let remote_responses = read_remotes(urls, str_path, headers.clone(), mem, file, hash).await;
             match remote_responses {

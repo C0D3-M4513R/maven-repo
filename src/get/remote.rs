@@ -16,9 +16,9 @@ use crate::timings::ServerTimings;
 pub async fn serve_remote_repository(
     remote: RemoteUpstream,
     str_path: Arc<str>,
-    repo: Arc<str>,
+    repo: &str,
     path: Arc<Path>,
-    config: Arc<Repository>,
+    config: &Repository,
     request_url: Arc<str>,
     remote_client: Option<IpAddr>,
 ) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {

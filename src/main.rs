@@ -2,8 +2,8 @@ extern crate core;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::sync::LazyLock;
+use std::time::{Duration};
 use actix_web::dev::Payload;
 use actix_web::HttpRequest;
 use crate::auth::BasicAuthentication;
@@ -16,6 +16,7 @@ mod repository;
 mod status;
 mod auth;
 mod err;
+#[cfg(feature = "put")]
 mod put;
 mod maven_metadata;
 mod path_info;
@@ -53,24 +54,23 @@ static CLIENT:LazyLock<reqwest::Client> = LazyLock::new(||{
         .expect("Client to be initialized")
 
 });
-static MAIN_CONFIG:LazyLock<arc_swap::ArcSwap<Repository>> = LazyLock::new(||{
+static MAIN_CONFIG:LazyLock<Repository> = LazyLock::new(||{
     let config = private::read_main_config().expect("Failed to read main configuration");
-    arc_swap::ArcSwap::new(config)
+    config
 });
-type RepositoryStore = HashMap<Box<str>, Arc<Repository>>;
-static REPOSITORIES:LazyLock<arc_swap::ArcSwap<RepositoryStore>> = LazyLock::new(|| {
-    let hm = gather_repos(MAIN_CONFIG.load_full()).expect("Failed to read repo configurations");
-    arc_swap::ArcSwap::new(Arc::new(hm))
+type RepositoryStore = HashMap<Box<str>, Repository>;
+static REPOSITORIES:LazyLock<RepositoryStore> = LazyLock::new(|| {
+    let hm = gather_repos(&MAIN_CONFIG).expect("Failed to read repo configurations");
+    hm
 });
 mod private {
     use std::io::SeekFrom;
-    use std::sync::Arc;
     use crate::repository::Repository;
 
-    pub fn read_main_config() -> anyhow::Result<Arc<Repository>> {
+    pub fn read_main_config() -> anyhow::Result<Repository> {
         let mut file = std::fs::File::open("..main.json")?;
         let config = read_main_config_file(&mut file, false)?;
-        Ok(Arc::new(config))
+        Ok(config)
     }
     fn read_main_config_file(file: &mut std::fs::File, seek: bool) -> anyhow::Result<Repository> {
         use std::io::{Read, Seek};
@@ -82,16 +82,6 @@ mod private {
         file.read_to_string(&mut contents)?;
 
         let config:Repository = serde_json::from_str(&contents)?;
-        Ok(config)
-    }
-    #[inline]
-    fn set_new_config(config: Arc<Repository>) {
-        super::MAIN_CONFIG.swap(config);
-    }
-    pub fn refresh_config() -> anyhow::Result<Arc<Repository>> {
-        let config = read_main_config()?;
-        set_new_config(config.clone());
-
         Ok(config)
     }
 }
@@ -120,8 +110,8 @@ fn main() -> anyhow::Result<()>{
         tracing::info!("Initialized logging");
     }
     {
-        let _ = MAIN_CONFIG.load();
-        let _ = REPOSITORIES.load();
+        let _ = LazyLock::force(&MAIN_CONFIG);
+        let _ = LazyLock::force(&REPOSITORIES);
     }
 
     let rt = ||::tokio::runtime::Builder::new_multi_thread()
@@ -134,7 +124,7 @@ fn main() -> anyhow::Result<()>{
         .block_on(async_main())
 }
 
-fn gather_repos(main_config: Arc<Repository>) -> anyhow::Result<HashMap<Box<str>, Arc<Repository>>> {
+fn gather_repos(main_config: &Repository) -> anyhow::Result<HashMap<Box<str>, Repository>> {
     let mut hm = HashMap::new();
 
     let cur_dir = std::env::current_dir()?;
@@ -204,41 +194,13 @@ fn gather_repos(main_config: Arc<Repository>) -> anyhow::Result<HashMap<Box<str>
             Ok(v) => v,
         };
         config.merge(&*main_config);
-        hm.insert(Box::from(name), Arc::new(config));
+        hm.insert(Box::from(name), config);
     }
 
     Ok(hm)
 }
 
-#[actix_web::main]
 async fn async_main() -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-        tokio::task::spawn(async move {loop {
-            signal.recv().await;
-            match tokio::task::spawn_blocking(||{
-                let start = Instant::now();
-                tracing::info!("Refreshing Repository Cache");
-                let main_config = match private::refresh_config() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        tracing::error!("There was an error, whilst reading the main config: {err}");
-                        return;
-                    }
-                };
-                let hm = gather_repos(main_config).expect("Failed to read repo configurations");
-                REPOSITORIES.swap(Arc::new(hm));
-                let time = start.elapsed();
-                tracing::info!("Cleared Repository Cache in {}ns", time.as_nanos());
-            }).await {
-                Ok(()) => {},
-                Err(err) => {
-                    tracing::error!("Panicked whilst refreshing config: {err}");
-                }
-            }
-        }});
-    }
     let server = actix_web::HttpServer::new(||
         actix_web::App::new()
             .wrap(actix_web::middleware::Logger::default())
@@ -278,6 +240,7 @@ impl actix_web::FromRequest for RequestHeaders {
 
 async fn repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthentication, Return>, request_headers: RequestHeaders, data: actix_web::web::Payload, method: actix_web::http::Method) -> Return {
     match method {
+        #[cfg(feature = "put")]
         actix_web::http::Method::PUT => put::put_repo_file(req, auth, data).await,
         actix_web::http::Method::GET |
         actix_web::http::Method::HEAD

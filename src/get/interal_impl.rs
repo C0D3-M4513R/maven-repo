@@ -6,15 +6,15 @@ use tokio::time::Instant;
 use crate::err::GetRepoFileError;
 use crate::get::{serve_remote_repository, serve_repository_stored_path, StoredRepoPath};
 use crate::repository::{get_repo_look_locations, Repository, Upstream};
-use crate::{RepositoryStore, RequestHeaders};
+use crate::{RequestHeaders};
 use crate::server_timings::AsServerTimingDuration;
 use crate::timings::ServerTimings;
 
-pub async fn resolve_impl(repo: &Arc<str>, path: &Path, str_path: &str, repos: &arc_swap::Guard<Arc<RepositoryStore>>, config: &Arc<Repository>, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
+pub async fn resolve_impl(repo: &'static str, path: &Path, str_path: &str, config: &'static Repository, timings: &mut ServerTimings, request_headers: &RequestHeaders) -> Result<StoredRepoPath, Vec<GetRepoFileError>> {
     let mut start = Instant::now();
     let mut next;
 
-    let (configs, mut errors) = get_repo_look_locations(repo, repos, &config);
+    let (configs, mut errors) = get_repo_look_locations(repo, &config);
     next = Instant::now();
     timings.push_iter_nodelim([r#"resolveImplGetLocalRepoConfigs;dur="#, (next-start).as_server_timing_duration().to_string().as_str(), r#";desc="Resolve Implementation: Fetch all local upstream repo configs""#]);
     tracing::info!("get_repo_file_impl: {repo}: get_repo_look_locations took {}µs", (next-start).as_micros());
@@ -61,7 +61,7 @@ pub async fn resolve_impl(repo: &Arc<str>, path: &Path, str_path: &str, repos: &
     let str_path = Arc::<str>::from(str_path);
     for (repo, repo_config) in &configs {
         let display_dir = !config.hide_directory_listings.unwrap_or(repo_config.hide_directory_listings.unwrap_or(false));
-        js.spawn(serve_repository_stored_path(Path::new(&**repo).join(&path), display_dir, request_headers.has_trailing_slash, repo_config.clone(), str_path.clone()));
+        js.spawn(serve_repository_stored_path(Path::new(&**repo).join(&path), display_dir, request_headers.has_trailing_slash, *repo_config, str_path.clone()));
     }
 
     if let Some(v) = check_result(&mut js).await {
@@ -152,9 +152,9 @@ pub async fn resolve_impl(repo: &Arc<str>, path: &Path, str_path: &str, repos: &
                     js.spawn(serve_remote_repository(
                         upstream.clone(),
                         str_path.clone(),
-                        repo.clone(),
+                        repo,
                         remote_path.clone(),
-                        config.clone(),
+                        config,
                         request_url.clone(),
                         request_headers.client_ip
                     ));
