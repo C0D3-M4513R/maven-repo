@@ -140,11 +140,22 @@ pub struct PathAuthorization{
 }
 
 impl Repository {
-    pub fn check_auth(&self, method: actix_web::http::Method, auth: Option<BasicAuthentication>, path: &str) -> Result<bool, Return> {
+    pub fn check_auth(
+        &self,
+        method: actix_web::http::Method,
+        #[cfg_attr(not(feature = "token-auth"), allow(unused_variables))]
+        auth: Option<BasicAuthentication>,
+        #[cfg_attr(not(feature = "token-auth"), allow(unused_variables))]
+        path: &str
+    ) -> Result<bool, Return> {
         let needs_auth = match method {
             actix_web::http::Method::GET => !self.publicly_readable.unwrap_or(true),
             _ => true,
         };
+
+        #[cfg(not(feature = "token-auth"))]
+        if needs_auth { Err(crate::UNAUTHORIZED()) } else { Ok(false) }
+        #[cfg(feature = "token-auth")]
         if needs_auth {
             let auth = match auth {
                 None => return Err(crate::UNAUTHORIZED()),
