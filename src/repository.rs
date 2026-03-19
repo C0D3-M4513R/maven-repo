@@ -5,7 +5,7 @@ use serde_derive::{Deserialize, Serialize};
 use tokio::time::Instant;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
-use crate::status::{Content, Return};
+use crate::status::{Return};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repository{
@@ -177,7 +177,7 @@ impl Repository {
                     tracing::error!("Failed to verify password '{}' against hash '{}': {err}", &auth.password, &token.hash);
                     return Err(Return{
                         status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        content: Content::Str("Error validating password"),
+                        content: crate::status::Content::Str("Error validating password"),
                         content_type: actix_web::http::header::ContentType::plaintext(),
                         header_map: Default::default(),
                     });
