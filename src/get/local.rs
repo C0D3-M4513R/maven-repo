@@ -44,7 +44,11 @@ pub async fn serve_repository_stored_path(path: PathBuf, display_dir: bool, has_
                     }
                     if let Err(meta) = meta {
                         tracing::warn!("Error opening metadata {}: {meta}", path.display());
-                        errors.push(GetRepoFileError::OpenFile)
+                        if meta.kind() == ErrorKind::NotFound {
+                            errors.push(GetRepoFileError::NotFound)
+                        } else {
+                            errors.push(GetRepoFileError::OpenFile)
+                        }
                     }
                 },
             }
@@ -178,6 +182,9 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<HashMap<String, F
                 let entry = match v.next_entry().await {
                     Err(err) => {
                         tracing::warn!("Error reading directory entry: {err}");
+                        if err.kind() == ErrorKind::NotFound {
+                            return Err(vec![GetRepoFileError::NotFound]);
+                        }
                         return Err(vec![GetRepoFileError::ReadDirectoryEntry]);
                     }
                     Ok(None) => break,
@@ -194,8 +201,11 @@ async fn serve_repository_stored_dir(path: &PathBuf) -> Result<HashMap<String, F
                     continue;
                 }
                 let file_type = match entry.file_type().await {
-                    Err(_) => {
+                    Err(err) => {
                         tracing::warn!("Error: failed to get the file-type of the directory entry");
+                        if err.kind() == ErrorKind::NotFound {
+                            return Err(vec![GetRepoFileError::NotFound]);
+                        }
                         return Err(vec![GetRepoFileError::ReadDirectoryEntryFileType]);
                     }
                     Ok(v) => v,
