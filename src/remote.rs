@@ -105,6 +105,7 @@ pub async fn read_remote<T: Deref<Target = str>>(
                 hasher.update(chunk.as_ref());
                 file.write_all(&*chunk).await.context("Error writing to the File")?;
             }
+            file.flush().await.context("Error flushing file-write buffer")?;
             let file = file.into_inner();
             file.flush().await.context("Error flushing file")?;
             file.sync_all().await.context("Error syncing file")?;
