@@ -24,6 +24,8 @@ mod etag;
 mod server_timings;
 mod file_metadata;
 mod remote;
+#[cfg(feature = "locking")]
+#[allow(dead_code)]
 mod file_ext;
 mod timings;
 
@@ -114,14 +116,7 @@ fn main() -> anyhow::Result<()>{
         let _ = LazyLock::force(&REPOSITORIES);
     }
 
-    let rt = ||::tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(1)
-        .build()
-        .expect("Failed to build tokio runtime");
-
-    ::actix_web::rt::System::with_tokio_rt(rt)
-        .block_on(async_main())
+    async_main()
 }
 
 fn gather_repos(main_config: &Repository) -> anyhow::Result<HashMap<Box<str>, Repository>> {
@@ -200,6 +195,7 @@ fn gather_repos(main_config: &Repository) -> anyhow::Result<HashMap<Box<str>, Re
     Ok(hm)
 }
 
+#[actix_web::main]
 async fn async_main() -> anyhow::Result<()> {
     let server = actix_web::HttpServer::new(||
         actix_web::App::new()
