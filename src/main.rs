@@ -123,7 +123,15 @@ fn main() -> anyhow::Result<()>{
         let _ = MAIN_CONFIG.load();
         let _ = REPOSITORIES.load();
     }
-    async_main()
+
+    let rt = ||::tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .expect("Failed to build tokio runtime");
+
+    ::actix_web::rt::System::with_tokio_rt(rt)
+        .block_on(async_main())
 }
 
 fn gather_repos(main_config: Arc<Repository>) -> anyhow::Result<HashMap<Box<str>, Arc<Repository>>> {
