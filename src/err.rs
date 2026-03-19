@@ -67,6 +67,7 @@ impl GetRepoFileError {
             Self::FileLockFailed => "Error: Failed to lock a local file",
             Self::UpstreamStatus => "Upstream repo responded with a non 200 status code",
             Self::UpstreamFileTooLarge => "The file from the remote is too Large.",
+            #[cfg(feature = "put")]
             Self::PutFileTooLarge => "The file is too Large.",
             Self::FileStartsWithDot => "Error: Refusing to contact upstream about files, which start with a '.'",
         }
@@ -104,6 +105,7 @@ impl GetRepoFileError {
             Self::FileLockFailed =>                 &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
             Self::UpstreamStatus =>                 &[actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
             Self::UpstreamFileTooLarge =>           &[actix_web::http::StatusCode::INSUFFICIENT_STORAGE, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
+            #[cfg(feature = "put")]
             Self::PutFileTooLarge =>                &[actix_web::http::StatusCode::PAYLOAD_TOO_LARGE, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
             Self::FileStartsWithDot =>              &[actix_web::http::StatusCode::BAD_REQUEST, actix_web::http::StatusCode::NOT_FOUND, actix_web::http::StatusCode::INTERNAL_SERVER_ERROR],
         }
