@@ -34,6 +34,8 @@
           pkg-config
           openssl
           libgcc
+					systemd
+					zstd
         ];
 
         package = pkgs.rustPlatform.buildRustPackage rec{
@@ -51,8 +53,9 @@
             pkgs.autoPatchelfHook
           ];
 
+					ZSTD_SYS_USE_PKG_CONFIG = true;
+
           buildInputs = with pkgs; [
-          	systemd
           ] ++ commonBuildInputs;
 
           buildFeatures = [
@@ -127,6 +130,7 @@
             ])
         )
           ] ++ commonBuildInputs;
+          ZSTD_SYS_USE_PKG_CONFIG = true;
           RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
           LD_LIBRARY_PATH = lib.makeLibraryPath commonBuildInputs;
           GIT_EXTERNAL_DIFF = "${difftastic}/bin/difft";
