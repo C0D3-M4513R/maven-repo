@@ -232,7 +232,7 @@ async fn async_main() -> anyhow::Result<()> {
                                 std::io::ErrorKind::InvalidInput,
                                 "Socket type was not as expected",
                             );
-                            tracing::error!("Systemd socket was not a stream-socket: {err}");
+                            tracing::error!("Systemd socket {i} was not a stream-socket: {err}");
                             continue
                         }
                         if systemd::daemon::is_socket_inet(
