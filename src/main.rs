@@ -2,10 +2,12 @@ extern crate core;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::os::fd::AsRawFd;
 use std::sync::LazyLock;
 use std::time::{Duration};
 use actix_web::dev::Payload;
 use actix_web::HttpRequest;
+use anyhow::Context;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
 use crate::repository::{Repository};
@@ -204,9 +206,46 @@ async fn async_main() -> anyhow::Result<()> {
             .default_service(actix_web::web::route().to(repo_file))
     );
 
-    #[cfg(feature = "socket")]
-    let server = server.bind_uds("server.sock")?;
-    #[cfg(not(feature = "socket"))]
+
+
+    #[cfg(all(unix, feature = "socket"))]
+    let server = {
+        #[cfg(feature = "systemd-socket")]
+        let server = {
+            let mut server = server;
+            match systemd::daemon::listen_fds(false) {
+                Err(err) => {
+                    tracing::error!("Failed to get info for already bound systemd socket. Falling back to manually allocated socket: {err}");
+                    server = server.bind_uds("server.sock")?
+                },
+                Ok(v) => {
+                    let mut has_socket = false;
+                    for (i, fd) in v.iter().enumerate() {
+                        let listener = match systemd::daemon::tcp_listener(fd) {
+                            Err(err) => {
+                                tracing::error!("Failed to build a tcp listened for fd number {i}: {err}");
+                                continue;
+                            },
+                            Ok(v) => v,
+                        };
+                        has_socket = true;
+                        let listener = std::os::unix::net::UnixListener::from(std::os::fd::OwnedFd::from(listener));
+                        server = server.listen_uds(listener).with_context(||format!("Failed to listen to fd number {i}"))?;
+                    }
+                    if !has_socket {
+                        tracing::error!("No already bound systemd socket were passed. Falling back to manually allocated socket");
+                        server = server.bind_uds("server.sock")?;
+                    }
+                }
+            }
+            server
+        };
+        #[cfg(not(feature= "systemd-socket"))]
+        let server = server.bind_uds("server.sock")?;
+        server
+    };
+
+    #[cfg(any(not(unix), not(feature = "socket")))]
     let server = server.bind((core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST), 8080))?;
 
     server.run().await?;

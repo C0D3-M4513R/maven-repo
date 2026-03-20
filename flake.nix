@@ -52,10 +52,12 @@
           ];
 
           buildInputs = with pkgs; [
+          	systemd
           ] ++ commonBuildInputs;
 
           buildFeatures = [
           	"socket"
+          	"systemd-socket"
           ];
 
           # Certain Rust tools won't work without this
