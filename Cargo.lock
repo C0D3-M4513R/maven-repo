@@ -1273,6 +1273,7 @@ dependencies = [
  "digest",
  "dotenvy",
  "futures",
+ "libc",
  "md-5",
  "memmap2",
  "quick-xml",

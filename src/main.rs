@@ -221,6 +221,63 @@ async fn async_main() -> anyhow::Result<()> {
                 Ok(v) => {
                     let mut has_socket = false;
                     for (i, fd) in v.iter().enumerate() {
+                        if !systemd::daemon::is_socket_inet(
+                            fd,
+                            None,
+                            Some(systemd::daemon::SocketType::Stream),
+                            systemd::daemon::Listening::NoListeningCheck,
+                            None,
+                        )? {
+                            let err = std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "Socket type was not as expected",
+                            );
+                            tracing::error!("Systemd socket was not a stream-socket: {err}");
+                            continue
+                        }
+                        if systemd::daemon::is_socket_inet(
+                            fd,
+                            None,
+                            Some(systemd::daemon::SocketType::Stream),
+                            systemd::daemon::Listening::IsNotListening,
+                            None,
+                        )? {unsafe{
+                            tracing::warn!("Socket {i} is not in listen mode. Calling libc::listen.");
+                            #[cfg(any(
+                                target_os = "windows",
+                                target_os = "redox",
+                                target_os = "espidf",
+                                target_os = "horizon"
+                            ))]
+                            const backlog: core::ffi::c_int = 128;
+                            #[cfg(any(
+                                // Silently capped to `/proc/sys/net/core/somaxconn`.
+                                target_os = "linux",
+                                // Silently capped to `kern.ipc.soacceptqueue`.
+                                target_os = "freebsd",
+                                // Silently capped to `kern.somaxconn sysctl`.
+                                target_os = "openbsd",
+                                // Silently capped to the default 128.
+                                target_vendor = "apple",
+                            ))]
+                            const backlog: core::ffi::c_int = -1;
+                            #[cfg(not(any(
+                                target_os = "windows",
+                                target_os = "redox",
+                                target_os = "espidf",
+                                target_os = "horizon",
+                                target_os = "linux",
+                                target_os = "freebsd",
+                                target_os = "openbsd",
+                                target_vendor = "apple",
+                            )))]
+                            const backlog: libc::c_int = libc::SOMAXCONN;
+                            if libc::listen(fd, backlog) == -1 {
+                                let err = std::io::Error::last_os_error();
+                                tracing::warn!("Failed to mark the socket {i} as a passive-socket using libc::listen: {err}");
+                                continue;
+                            }
+                        }}
                         let listener = match systemd::daemon::tcp_listener(fd) {
                             Err(err) => {
                                 tracing::error!("Failed to build a tcp listened for fd number {i}: {err}");
