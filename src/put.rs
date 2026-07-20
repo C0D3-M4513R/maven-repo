@@ -13,7 +13,7 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 use crate::auth::BasicAuthentication;
 use crate::err::GetRepoFileError;
 use crate::path_info::PathInfo;
-use crate::repository::get_repo_config;
+use crate::REPOSITORIES;
 use crate::status::{Content, Return};
 
 pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthentication, Return>, data: actix_web::web::Payload) -> Return {
@@ -29,7 +29,7 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
                 Some(Component::Normal(v)) => {
                     match v.to_str() {
                         Some(v) => {
-                            repo = Arc::from(v);
+                            repo = Arc::<str>::from(v);
                             break;
                         },
                         None => return Return{
@@ -76,9 +76,11 @@ pub async fn put_repo_file(req: actix_web::HttpRequest, auth: Result<BasicAuthen
     let str_path = str_path.strip_prefix("/").unwrap_or(str_path);
     let str_path = str_path.strip_suffix("/").unwrap_or(str_path);
 
-    let config = match get_repo_config(&repo) {
-        Ok(v) => v,
-        Err(e) => return e.to_return(),
+    let (_, config) = match REPOSITORIES.get_key_value(repo.as_ref()) {
+        Some((k, v)) => (&**k, v),
+        None => {
+            return GetRepoFileError::NotFound.to_return();
+        },
     };
 
 
